@@ -179,6 +179,6 @@ tests/                protocol and real-backend integration tests
 
 MIT License
 <p>
-Copyright (c) 2026 DioNanos<br>
+Copyright (c) 2026 Davide A. Guglielmi<br>
 Made in Italy
 </p>
