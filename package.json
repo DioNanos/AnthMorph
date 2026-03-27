@@ -1,6 +1,6 @@
 {
   "name": "@mmmbuto/anthmorph",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Chutes-first Anthropic /v1/messages proxy for Chutes and OpenAI-compatible backends",
   "license": "MIT",
   "author": "DioNanos <noreply@github.com>",

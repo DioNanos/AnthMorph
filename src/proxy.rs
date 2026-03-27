@@ -554,7 +554,11 @@ fn transition_to_tool(
     *active_block = Some(ActiveBlock::ToolUse(tool_index, index));
     events.push(start_block_sse(
         index,
-        anthropic::ContentBlockStartData::ToolUse { id, name },
+        anthropic::ContentBlockStartData::ToolUse {
+            id,
+            name,
+            input: json!({}),
+        },
     ));
     (index, events)
 }
@@ -734,6 +738,7 @@ mod tests {
 
         let joined = output.join("");
         assert!(joined.contains("\"type\":\"tool_use\""));
+        assert!(joined.contains("\"input\":{}"));
         assert!(joined.contains("\"partial_json\":\"{\\\"loc\""));
         assert!(joined.contains("\"partial_json\":\"ation"));
         assert_eq!(joined.matches("event: content_block_start").count(), 1);

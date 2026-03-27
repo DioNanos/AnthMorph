@@ -248,7 +248,11 @@ pub enum ContentBlockStartData {
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]

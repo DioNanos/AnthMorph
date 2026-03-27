@@ -1,6 +1,6 @@
 # AnthMorph
 
-[![Status](https://img.shields.io/badge/Status-0.1.1-blue.svg)](#project-status)
+[![Status](https://img.shields.io/badge/Status-0.1.2-blue.svg)](#project-status)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![Target](https://img.shields.io/badge/Target-Termux%20%2F%20Linux-green.svg)](https://termux.dev)
@@ -19,7 +19,7 @@ Core capabilities:
 
 ## Project Status
 
-- Current line: `0.1.1`
+- Current line: `0.1.2`
 - Primary target: `chutes.ai`
 - Secondary target: generic OpenAI-compatible endpoints
 - Tested locally against Chutes, MiniMax, and Alibaba Coding Plan rejection handling
