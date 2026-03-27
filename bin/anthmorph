@@ -1,0 +1,22 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+RELEASE_BIN=$ROOT_DIR/target/release/anthmorph
+DEBUG_BIN=$ROOT_DIR/target/debug/anthmorph
+
+if [ -x "$RELEASE_BIN" ]; then
+  exec "$RELEASE_BIN" "$@"
+fi
+
+if [ -x "$DEBUG_BIN" ]; then
+  exec "$DEBUG_BIN" "$@"
+fi
+
+if command -v cargo >/dev/null 2>&1; then
+  (cd "$ROOT_DIR" && cargo build --release --quiet)
+  exec "$RELEASE_BIN" "$@"
+fi
+
+echo "anthmorph binary not found and cargo is unavailable" >&2
+exit 1

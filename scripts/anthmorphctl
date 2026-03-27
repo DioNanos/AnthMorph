@@ -1,0 +1,456 @@
+#!/bin/sh
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+STATE_DIR=${ANTHMORPH_STATE_DIR:-$ROOT_DIR/.anthmorph}
+CONFIG_FILE=$STATE_DIR/config.env
+PID_FILE=$STATE_DIR/anthmorph.pid
+LOG_FILE=$STATE_DIR/anthmorph.log
+BIN_PATH_DEFAULT=$ROOT_DIR/target/release/anthmorph
+
+mkdir -p "$STATE_DIR"
+
+usage() {
+  cat <<USAGE
+usage:
+  scripts/anthmorphctl init chutes [options]
+  scripts/anthmorphctl init minimax [options]
+  scripts/anthmorphctl init openai --backend-url URL --model MODEL [options]
+  scripts/anthmorphctl set key-env ENV_NAME
+  scripts/anthmorphctl set key VALUE --save
+  scripts/anthmorphctl unset key
+  scripts/anthmorphctl start
+  scripts/anthmorphctl stop
+  scripts/anthmorphctl restart
+  scripts/anthmorphctl status
+  scripts/anthmorphctl logs
+  scripts/anthmorphctl print-config
+  scripts/anthmorphctl help
+
+options for init:
+  --port PORT
+  --backend-url URL
+  --model MODEL
+  --reasoning-model MODEL
+  --ingress-api-key VALUE
+  --allow-origin ORIGIN
+  --key-env ENV_NAME
+  --api-key VALUE --save-key
+
+notes:
+  - by default the API key is not saved; use set key-env or --key-env
+  - set key VALUE --save stores the key in the local config file
+  - config lives in .anthmorph/config.env
+USAGE
+}
+
+ensure_config() {
+  if [ ! -f "$CONFIG_FILE" ]; then
+    echo "missing config: run 'scripts/anthmorphctl init ...' first" >&2
+    exit 1
+  fi
+}
+
+load_config() {
+  ensure_config
+  # shellcheck disable=SC1090
+  . "$CONFIG_FILE"
+}
+
+save_config() {
+  tmp_file=$CONFIG_FILE.tmp
+  {
+    printf 'BACKEND_PROFILE=%s\n' "${BACKEND_PROFILE:-}"
+    printf 'BACKEND_URL=%s\n' "${BACKEND_URL:-}"
+    printf 'MODEL=%s\n' "${MODEL:-}"
+    printf 'REASONING_MODEL=%s\n' "${REASONING_MODEL:-}"
+    printf 'PORT=%s\n' "${PORT:-3000}"
+    printf 'INGRESS_API_KEY=%s\n' "${INGRESS_API_KEY:-}"
+    printf 'ALLOWED_ORIGINS=%s\n' "${ALLOWED_ORIGINS:-}"
+    printf 'API_KEY_ENV=%s\n' "${API_KEY_ENV:-}"
+    printf 'API_KEY=%s\n' "${API_KEY:-}"
+    printf 'BIN_PATH=%s\n' "${BIN_PATH:-$BIN_PATH_DEFAULT}"
+  } > "$tmp_file"
+  mv "$tmp_file" "$CONFIG_FILE"
+}
+
+is_running() {
+  [ -f "$PID_FILE" ] || return 1
+  pid=$(cat "$PID_FILE" 2>/dev/null || true)
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+resolve_api_key() {
+  if [ -n "${API_KEY:-}" ]; then
+    printf '%s' "$API_KEY"
+    return 0
+  fi
+
+  if [ -n "${API_KEY_ENV:-}" ]; then
+    eval "resolved=\${$API_KEY_ENV-}"
+    if [ -n "${resolved:-}" ]; then
+      printf '%s' "$resolved"
+      return 0
+    fi
+  fi
+
+  return 1
+}
+
+health_on_port() {
+  curl -fsS "http://127.0.0.1:$1/health" 2>/dev/null
+}
+
+join_allow_origin() {
+  value=$1
+  if [ -z "${ALLOWED_ORIGINS:-}" ]; then
+    ALLOWED_ORIGINS=$value
+  else
+    ALLOWED_ORIGINS=${ALLOWED_ORIGINS},$value
+  fi
+}
+
+parse_common_init_args() {
+  SAVE_KEY=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port)
+        PORT=$2
+        shift 2
+        ;;
+      --backend-url)
+        BACKEND_URL=$2
+        shift 2
+        ;;
+      --model)
+        MODEL=$2
+        shift 2
+        ;;
+      --reasoning-model)
+        REASONING_MODEL=$2
+        shift 2
+        ;;
+      --ingress-api-key)
+        INGRESS_API_KEY=$2
+        shift 2
+        ;;
+      --allow-origin)
+        join_allow_origin "$2"
+        shift 2
+        ;;
+      --key-env)
+        API_KEY_ENV=$2
+        shift 2
+        ;;
+      --api-key)
+        API_KEY=$2
+        shift 2
+        ;;
+      --save-key)
+        SAVE_KEY=1
+        shift
+        ;;
+      *)
+        echo "unknown option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  if [ "$SAVE_KEY" -ne 1 ]; then
+    API_KEY=
+  fi
+}
+
+init_cmd() {
+  preset=${1:-}
+  [ -n "$preset" ] || {
+    echo "missing preset" >&2
+    usage
+    exit 1
+  }
+  shift
+
+  BACKEND_PROFILE=
+  BACKEND_URL=
+  MODEL=
+  REASONING_MODEL=
+  PORT=3000
+  INGRESS_API_KEY=
+  ALLOWED_ORIGINS=
+  API_KEY_ENV=
+  API_KEY=
+  BIN_PATH=$BIN_PATH_DEFAULT
+
+  case "$preset" in
+    chutes)
+      BACKEND_PROFILE=chutes
+      BACKEND_URL=https://llm.chutes.ai/v1
+      MODEL=Qwen/Qwen3-Coder-Next-TEE
+      API_KEY_ENV=CHUTES_API_KEY
+      ;;
+    minimax)
+      BACKEND_PROFILE=openai-generic
+      BACKEND_URL=${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
+      MODEL=${MINIMAX_MODEL:-MiniMax-M2.5}
+      API_KEY_ENV=MINIMAX_API_KEY
+      ;;
+    openai)
+      BACKEND_PROFILE=openai-generic
+      ;;
+    *)
+      echo "unsupported preset: $preset" >&2
+      exit 1
+      ;;
+  esac
+
+  parse_common_init_args "$@"
+
+  if [ -z "$BACKEND_URL" ] || [ -z "$MODEL" ] || [ -z "$BACKEND_PROFILE" ]; then
+    echo "backend profile, backend url and model are required" >&2
+    exit 1
+  fi
+
+  if [ -n "$API_KEY" ] && [ -n "$API_KEY_ENV" ]; then
+    API_KEY_ENV=
+  fi
+
+  save_config
+  echo "saved config to $CONFIG_FILE"
+}
+
+set_cmd() {
+  ensure_config
+  load_config
+  field=${1:-}
+  [ -n "$field" ] || {
+    echo "missing field" >&2
+    exit 1
+  }
+  shift
+
+  case "$field" in
+    key-env)
+      API_KEY_ENV=${1:-}
+      [ -n "$API_KEY_ENV" ] || {
+        echo "missing env name" >&2
+        exit 1
+      }
+      API_KEY=
+      ;;
+    key)
+      value=${1:-}
+      [ -n "$value" ] || {
+        echo "missing key value" >&2
+        exit 1
+      }
+      shift
+      save_flag=${1:-}
+      if [ "$save_flag" = "--save" ]; then
+        API_KEY=$value
+        API_KEY_ENV=
+      else
+        echo "use: scripts/anthmorphctl set key VALUE --save" >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "unsupported field: $field" >&2
+      exit 1
+      ;;
+  esac
+
+  save_config
+  echo "updated $field"
+}
+
+unset_cmd() {
+  ensure_config
+  load_config
+  field=${1:-}
+  case "$field" in
+    key)
+      API_KEY=
+      API_KEY_ENV=
+      ;;
+    *)
+      echo "unsupported unset field: $field" >&2
+      exit 1
+      ;;
+  esac
+  save_config
+  echo "cleared $field"
+}
+
+start_cmd() {
+  load_config
+
+  if is_running; then
+    echo "already running (pid $(cat "$PID_FILE"))"
+    return 0
+  fi
+
+  if health_on_port "$PORT" >/dev/null; then
+    echo "port $PORT is already serving an AnthMorph-compatible health endpoint" >&2
+    echo "use a different port with 'scripts/anthmorphctl init ... --port PORT'" >&2
+    exit 1
+  fi
+
+  if [ ! -x "$BIN_PATH" ]; then
+    (cd "$ROOT_DIR" && cargo build --release --quiet)
+  fi
+
+  api_key=$(resolve_api_key || true)
+  if [ -z "$api_key" ]; then
+    echo "missing API key: configure API_KEY_ENV or save an API key" >&2
+    exit 1
+  fi
+
+  set -- "$BIN_PATH" \
+    --port "$PORT" \
+    --backend-profile "$BACKEND_PROFILE" \
+    --backend-url "$BACKEND_URL" \
+    --model "$MODEL" \
+    --api-key "$api_key"
+
+  if [ -n "${REASONING_MODEL:-}" ]; then
+    set -- "$@" --reasoning-model "$REASONING_MODEL"
+  fi
+  if [ -n "${INGRESS_API_KEY:-}" ]; then
+    set -- "$@" --ingress-api-key "$INGRESS_API_KEY"
+  fi
+
+  old_ifs=${IFS:- }
+  IFS=,
+  for origin in ${ALLOWED_ORIGINS:-}; do
+    [ -n "$origin" ] || continue
+    set -- "$@" --allow-origin "$origin"
+  done
+  IFS=$old_ifs
+
+  nohup "$@" >>"$LOG_FILE" 2>&1 &
+  pid=$!
+  echo "$pid" > "$PID_FILE"
+  sleep 1
+
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "started anthmorph (pid $pid)"
+  else
+    echo "failed to start; see $LOG_FILE" >&2
+    rm -f "$PID_FILE"
+    exit 1
+  fi
+}
+
+stop_cmd() {
+  if ! is_running; then
+    rm -f "$PID_FILE"
+    echo "not running"
+    return 0
+  fi
+
+  pid=$(cat "$PID_FILE")
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$PID_FILE"
+      echo "stopped anthmorph"
+      return 0
+    fi
+    sleep 1
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  echo "killed anthmorph"
+}
+
+status_cmd() {
+  load_config
+  if is_running; then
+    pid=$(cat "$PID_FILE")
+    health=$(health_on_port "$PORT" || true)
+    echo "status: running"
+    echo "pid: $pid"
+    echo "health: ${health:-unreachable}"
+  else
+    health=$(health_on_port "$PORT" || true)
+    if [ -n "$health" ]; then
+      echo "status: external-process-on-port"
+      echo "health: $health"
+    else
+      echo "status: stopped"
+    fi
+  fi
+  echo "profile: ${BACKEND_PROFILE:-}"
+  echo "backend_url: ${BACKEND_URL:-}"
+  echo "model: ${MODEL:-}"
+  echo "port: ${PORT:-}"
+  if [ -n "${API_KEY_ENV:-}" ]; then
+    key_source=env:$API_KEY_ENV
+  elif [ -n "${API_KEY:-}" ]; then
+    key_source=saved
+  else
+    key_source=missing
+  fi
+  echo "key_source: $key_source"
+  echo "log_file: $LOG_FILE"
+  echo "config_file: $CONFIG_FILE"
+}
+
+logs_cmd() {
+  if [ -f "$LOG_FILE" ]; then
+    tail -n 80 "$LOG_FILE"
+  else
+    echo "log file not found: $LOG_FILE" >&2
+    exit 1
+  fi
+}
+
+print_config_cmd() {
+  ensure_config
+  sed '/^API_KEY=/s/=.*/=<hidden>/;/^INGRESS_API_KEY=/s/=.*/=<hidden>/' "$CONFIG_FILE"
+}
+
+cmd=${1:-help}
+case "$cmd" in
+  init)
+    shift
+    init_cmd "$@"
+    ;;
+  set)
+    shift
+    set_cmd "$@"
+    ;;
+  unset)
+    shift
+    unset_cmd "$@"
+    ;;
+  start)
+    start_cmd
+    ;;
+  stop)
+    stop_cmd
+    ;;
+  restart)
+    stop_cmd
+    start_cmd
+    ;;
+  status)
+    status_cmd
+    ;;
+  logs)
+    logs_cmd
+    ;;
+  print-config)
+    print_config_cmd
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "unknown command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

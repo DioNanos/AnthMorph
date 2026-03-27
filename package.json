@@ -1,0 +1,52 @@
+{
+  "name": "@mmmbuto/anthmorph",
+  "version": "0.1.0",
+  "description": "Chutes-first Anthropic /v1/messages proxy for Chutes and OpenAI-compatible backends",
+  "license": "MIT",
+  "author": "DioNanos <noreply@github.com>",
+  "bin": {
+    "anthmorph": "bin/anthmorph",
+    "anthmorphctl": "scripts/anthmorphctl"
+  },
+  "files": [
+    "bin/",
+    "scripts/anthmorphctl",
+    "scripts/postinstall.js",
+    "scripts/smoke_test.sh",
+    "src/",
+    "tests/",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "build:rust": "cargo build --release",
+    "test": "cargo test",
+    "pack:dry-run": "npm pack --dry-run"
+  },
+  "keywords": [
+    "anthropic",
+    "claude",
+    "proxy",
+    "chutes",
+    "openai-compatible",
+    "termux",
+    "rust"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DioNanos/AnthMorph.git"
+  },
+  "homepage": "https://github.com/DioNanos/AnthMorph#readme",
+  "bugs": {
+    "url": "https://github.com/DioNanos/AnthMorph/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
