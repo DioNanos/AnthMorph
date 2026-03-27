@@ -1,31 +1,33 @@
 #!/bin/sh
 set -eu
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+SCRIPT_PATH=$(readlink -f -- "$0" 2>/dev/null || printf "%s" "$0")
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
 STATE_DIR=${ANTHMORPH_STATE_DIR:-$ROOT_DIR/.anthmorph}
 CONFIG_FILE=$STATE_DIR/config.env
 PID_FILE=$STATE_DIR/anthmorph.pid
 LOG_FILE=$STATE_DIR/anthmorph.log
-BIN_PATH_DEFAULT=$ROOT_DIR/target/release/anthmorph
+PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
+BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
 
 mkdir -p "$STATE_DIR"
 
 usage() {
   cat <<USAGE
 usage:
-  scripts/anthmorphctl init chutes [options]
-  scripts/anthmorphctl init minimax [options]
-  scripts/anthmorphctl init openai --backend-url URL --model MODEL [options]
-  scripts/anthmorphctl set key-env ENV_NAME
-  scripts/anthmorphctl set key VALUE --save
-  scripts/anthmorphctl unset key
-  scripts/anthmorphctl start
-  scripts/anthmorphctl stop
-  scripts/anthmorphctl restart
-  scripts/anthmorphctl status
-  scripts/anthmorphctl logs
-  scripts/anthmorphctl print-config
-  scripts/anthmorphctl help
+  anthmorphctl init chutes [options]
+  anthmorphctl init minimax [options]
+  anthmorphctl init openai --backend-url URL --model MODEL [options]
+  anthmorphctl set key-env ENV_NAME
+  anthmorphctl set key VALUE --save
+  anthmorphctl unset key
+  anthmorphctl start
+  anthmorphctl stop
+  anthmorphctl restart
+  anthmorphctl status
+  anthmorphctl logs
+  anthmorphctl print-config
+  anthmorphctl help
 
 options for init:
   --port PORT
@@ -46,7 +48,7 @@ USAGE
 
 ensure_config() {
   if [ ! -f "$CONFIG_FILE" ]; then
-    echo "missing config: run 'scripts/anthmorphctl init ...' first" >&2
+    echo "missing config: run 'anthmorphctl init ...' first" >&2
     exit 1
   fi
 }
@@ -100,6 +102,33 @@ resolve_api_key() {
 
 health_on_port() {
   curl -fsS "http://127.0.0.1:$1/health" 2>/dev/null
+}
+
+bin_supports_profile() {
+  [ -x "$1" ] || return 1
+  "$1" --help 2>&1 | grep -q -- '--backend-profile'
+}
+
+ensure_bin_ready() {
+  if bin_supports_profile "$BIN_PATH"; then
+    return 0
+  fi
+
+  if bin_supports_profile "$PREBUILT_BIN"; then
+    BIN_PATH="$PREBUILT_BIN"
+    save_config
+    return 0
+  fi
+
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo not found and anthmorph binary is missing or outdated" >&2
+    return 1
+  fi
+
+  (cd "$ROOT_DIR" && cargo build --release --quiet) || return 1
+  BIN_PATH=$ROOT_DIR/target/release/anthmorph
+  save_config
+  bin_supports_profile "$BIN_PATH"
 }
 
 join_allow_origin() {
@@ -297,9 +326,7 @@ start_cmd() {
     exit 1
   fi
 
-  if [ ! -x "$BIN_PATH" ]; then
-    (cd "$ROOT_DIR" && cargo build --release --quiet)
-  fi
+  ensure_bin_ready || exit 1
 
   api_key=$(resolve_api_key || true)
   if [ -z "$api_key" ]; then

@@ -1,6 +1,6 @@
 # AnthMorph
 
-[![Status](https://img.shields.io/badge/Status-0.1.0-blue.svg)](#project-status)
+[![Status](https://img.shields.io/badge/Status-0.1.1-blue.svg)](#project-status)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![Target](https://img.shields.io/badge/Target-Termux%20%2F%20Linux-green.svg)](https://termux.dev)
@@ -15,15 +15,15 @@ Core capabilities:
 - `openai_generic` profile for conservative compatibility with generic OpenAI-style providers
 - Streaming SSE translation with fragmented tool-call handling
 - Local control CLI for init, start, stop, restart, status, and logs
-- Termux-friendly workflow with optional npm distribution
+- Termux-first npm distribution with bundled prebuilt binary and local self-build on Linux/macOS
 
 ## Project Status
 
-- Current line: `0.1.0`
+- Current line: `0.1.1`
 - Primary target: `chutes.ai`
 - Secondary target: generic OpenAI-compatible endpoints
 - Tested locally against Chutes, MiniMax, and Alibaba Coding Plan rejection handling
-- Distribution paths: source build and npm package under `@mmmbuto/anthmorph`
+- Distribution paths: Termux-first npm package with bundled prebuilt binary, plus source builds
 - Repository metadata is aligned for GitHub and npm publication
 
 ## Quickstart
@@ -65,7 +65,8 @@ anthmorphctl stop
 ## CLI Control
 
 `anthmorphctl` is the operator entrypoint.
-It stores runtime state under `.anthmorph/` in the project root.
+By default it stores runtime state under `.anthmorph/` inside the installed package root.
+For shell wrappers and daily usage, prefer setting `ANTHMORPH_STATE_DIR` to a dedicated writable path.
 
 Common commands:
 
@@ -135,8 +136,9 @@ This repository already includes npm packaging files:
 
 Packaging behavior:
 - `npm install -g @mmmbuto/anthmorph` exposes `anthmorph` and `anthmorphctl`
-- `postinstall` tries to build the Rust binary with `cargo build --release`
-- if the binary is missing later, the `anthmorph` shim will try to build it on demand
+- Termux uses the bundled `prebuilt/anthmorph` from the npm tarball
+- Linux and macOS use `postinstall` to build locally with Cargo
+- if no binary is available later, the `anthmorph` shim still falls back to a local release build
 
 ## Build And Test
 

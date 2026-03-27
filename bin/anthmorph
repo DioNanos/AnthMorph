@@ -1,9 +1,20 @@
 #!/bin/sh
 set -eu
 
-ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+SCRIPT_PATH=$(readlink -f -- "$0" 2>/dev/null || printf "%s" "$0")
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
+PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
 RELEASE_BIN=$ROOT_DIR/target/release/anthmorph
 DEBUG_BIN=$ROOT_DIR/target/debug/anthmorph
+IS_TERMUX=0
+
+if [ -n "${TERMUX_VERSION:-}" ] || [ "${PREFIX:-}" = "/data/data/com.termux/files/usr" ]; then
+  IS_TERMUX=1
+fi
+
+if [ "$IS_TERMUX" -eq 1 ] && [ -x "$PREBUILT_BIN" ]; then
+  exec "$PREBUILT_BIN" "$@"
+fi
 
 if [ -x "$RELEASE_BIN" ]; then
   exec "$RELEASE_BIN" "$@"
