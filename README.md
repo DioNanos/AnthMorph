@@ -83,7 +83,7 @@ anthmorphctl stop
 Direct binary usage is also available:
 
 ```bash
-anthmorph --port 3107 --backend-profile chutes --backend-url https://llm.chutes.ai/v1 --model Qwen/Qwen3-Coder-Next-TEE --api-key "$CHUTES_API_KEY"
+anthmorph --port 3107 --backend-profile chutes --backend-url https://llm.chutes.ai/v1 --model Qwen/Qwen3.5-397B-A17B-TEE,zai-org/GLM-5-TEE,deepseek-ai/DeepSeek-V3.2-TEE --api-key "$CHUTES_API_KEY"
 ```
 
 ## Architecture

@@ -255,9 +255,12 @@ fn create_sse_stream(
                                             id: message_id.clone().unwrap_or_else(generate_message_id),
                                             message_type: "message".to_string(),
                                             role: "assistant".to_string(),
+                                            content: vec![],
                                             model: current_model
                                                 .clone()
                                                 .unwrap_or_else(|| fallback_model.clone()),
+                                            stop_reason: None,
+                                            stop_sequence: None,
                                             usage: anthropic::Usage {
                                                 input_tokens: 0,
                                                 output_tokens: 0,
@@ -413,8 +416,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(BackendProfile::Chutes),
-            model: std::env::var("ANTHMORPH_MODEL")
-                .unwrap_or_else(|_| "Qwen/Qwen3-Coder-Next-TEE".to_string()),
+            model: std::env::var("ANTHMORPH_MODEL").unwrap_or_else(|_| {
+                "Qwen/Qwen3.5-397B-A17B-TEE,zai-org/GLM-5-TEE,deepseek-ai/DeepSeek-V3.2-TEE"
+                    .to_string()
+            }),
             reasoning_model: std::env::var("ANTHMORPH_REASONING_MODEL").ok(),
             api_key: std::env::var("ANTHMORPH_API_KEY").ok(),
             ingress_api_key: std::env::var("ANTHMORPH_INGRESS_API_KEY").ok(),
@@ -742,6 +747,61 @@ mod tests {
         assert!(joined.contains("\"partial_json\":\"{\\\"loc\""));
         assert!(joined.contains("\"partial_json\":\"ation"));
         assert_eq!(joined.matches("event: content_block_start").count(), 1);
+    }
+
+    #[test]
+    fn message_start_sse_includes_required_anthropic_fields() {
+        let event = anthropic::StreamEvent::MessageStart {
+            message: anthropic::MessageStartData {
+                id: "msg_test".to_string(),
+                message_type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: vec![],
+                model: "glm-5.1".to_string(),
+                stop_reason: None,
+                stop_sequence: None,
+                usage: anthropic::Usage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            },
+        };
+
+        let serialized = sse_event("message_start", &event);
+        let payload = serialized
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("message_start data line");
+        let parsed: serde_json::Value = serde_json::from_str(payload).expect("valid json");
+
+        assert_eq!(parsed["message"]["type"], "message");
+        assert_eq!(parsed["message"]["role"], "assistant");
+        assert_eq!(parsed["message"]["content"], json!([]));
+        assert!(parsed["message"]["stop_reason"].is_null());
+        assert!(parsed["message"]["stop_sequence"].is_null());
+    }
+
+    #[test]
+    fn content_block_start_tool_use_has_flat_anthropic_shape() {
+        let payload = start_block_sse(
+            0,
+            anthropic::ContentBlockStartData::ToolUse {
+                id: "toolu_123".to_string(),
+                name: "mcp__memory__memory_read".to_string(),
+                input: json!({}),
+            },
+        )
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("content_block_start data line")
+        .to_string();
+
+        let parsed: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(parsed["content_block"]["type"], "tool_use");
+        assert_eq!(parsed["content_block"]["id"], "toolu_123");
+        assert_eq!(parsed["content_block"]["name"], "mcp__memory__memory_read");
+        assert_eq!(parsed["content_block"]["input"], json!({}));
+        assert!(parsed["content_block"].get("content_block").is_none());
     }
 
     #[test]

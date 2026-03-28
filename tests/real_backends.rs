@@ -153,7 +153,7 @@ fn chutes_real_backend_smoke() {
     let server = start_server(
         "chutes",
         &env::var("CHUTES_BASE_URL").unwrap_or_else(|_| "https://llm.chutes.ai/v1".to_string()),
-        &env::var("CHUTES_MODEL").unwrap_or_else(|_| "Qwen/Qwen3-Coder-Next-TEE".to_string()),
+        &env::var("CHUTES_MODEL").unwrap_or_else(|_| "deepseek-ai/DeepSeek-V3.2-TEE".to_string()),
         &api_key,
     );
 

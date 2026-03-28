@@ -236,12 +236,17 @@ pub struct MessageStartData {
     #[serde(rename = "type")]
     pub message_type: String,
     pub role: String,
+    pub content: Vec<serde_json::Value>,
     pub model: String,
+    #[serde(rename = "stop_reason")]
+    pub stop_reason: Option<serde_json::Value>,
+    #[serde(rename = "stop_sequence")]
+    pub stop_sequence: Option<serde_json::Value>,
     pub usage: Usage,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(tag = "type", content = "content_block")]
+#[serde(tag = "type")]
 pub enum ContentBlockStartData {
     #[serde(rename = "text")]
     Text { text: String },

@@ -11,7 +11,7 @@ case "$BACKEND" in
   chutes)
     PROFILE=chutes
     BACKEND_URL=${CHUTES_BASE_URL:-https://llm.chutes.ai/v1}
-    MODEL=${CHUTES_MODEL:-Qwen/Qwen3-Coder-Next-TEE}
+    MODEL=${CHUTES_MODEL:-Qwen/Qwen3.5-397B-A17B-TEE,zai-org/GLM-5-TEE,deepseek-ai/DeepSeek-V3.2-TEE}
     API_KEY=${CHUTES_API_KEY:?CHUTES_API_KEY is required}
     ;;
   alibaba)

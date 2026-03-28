@@ -61,27 +61,23 @@ pub fn anthropic_to_openai(
     let mut openai_messages = Vec::new();
 
     if let Some(system) = req.system {
-        match system {
-            anthropic::SystemPrompt::Single(text) => {
-                openai_messages.push(openai::Message {
-                    role: "system".to_string(),
-                    content: Some(openai::MessageContent::Text(text)),
-                    name: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                });
-            }
-            anthropic::SystemPrompt::Multiple(messages) => {
-                for msg in messages {
-                    openai_messages.push(openai::Message {
-                        role: "system".to_string(),
-                        content: Some(openai::MessageContent::Text(msg.text)),
-                        name: None,
-                        tool_calls: None,
-                        tool_call_id: None,
-                    });
-                }
-            }
+        let system_text = match system {
+            anthropic::SystemPrompt::Single(text) => text,
+            anthropic::SystemPrompt::Multiple(messages) => messages
+                .into_iter()
+                .map(|msg| msg.text)
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        };
+
+        if !system_text.is_empty() {
+            openai_messages.push(openai::Message {
+                role: "system".to_string(),
+                content: Some(openai::MessageContent::Text(system_text)),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
         }
     }
 
@@ -354,7 +350,7 @@ pub fn map_stop_reason(finish_reason: Option<&str>) -> Option<String> {
 mod tests {
     use super::*;
     use crate::models::anthropic::{
-        AnthropicRequest, ContentBlock, Message, MessageContent, SystemPrompt, Tool,
+        AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt, Tool,
     };
 
     fn sample_request() -> AnthropicRequest {
@@ -407,6 +403,41 @@ mod tests {
 
         let err = anthropic_to_openai(req, "model", BackendProfile::Chutes).unwrap_err();
         assert!(err.to_string().contains("thinking blocks"));
+    }
+
+    #[test]
+    fn collapses_multiple_system_prompts_into_single_openai_message() {
+        let req = AnthropicRequest {
+            model: "claude".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: MessageContent::Text("hi".to_string()),
+            }],
+            system: Some(SystemPrompt::Multiple(vec![
+                SystemMessage {
+                    text: "one".to_string(),
+                },
+                SystemMessage {
+                    text: "two".to_string(),
+                },
+            ])),
+            max_tokens: 64,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop_sequences: None,
+            stream: None,
+            tools: None,
+            extra: Default::default(),
+        };
+
+        let out = anthropic_to_openai(req, "model", BackendProfile::Chutes).unwrap();
+        assert_eq!(out.messages[0].role, "system");
+        match out.messages[0].content.as_ref().unwrap() {
+            openai::MessageContent::Text(text) => assert_eq!(text, "one\n\ntwo"),
+            other => panic!("expected text system prompt, got {other:?}"),
+        }
+        assert_eq!(out.messages[1].role, "user");
     }
 
     #[test]
