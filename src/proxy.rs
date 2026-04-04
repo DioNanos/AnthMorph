@@ -1,4 +1,4 @@
-use crate::config::BackendProfile;
+use crate::config::{BackendProfile, CompatMode};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use crate::transform::{self, generate_message_id};
@@ -21,10 +21,22 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 
 fn map_model(client_model: &str, config: &Config) -> String {
     match client_model {
-        m if m.is_empty() || m == "default" => config.model.clone(),
-        m if m.starts_with("claude-") => config.model.clone(),
+        m if m.is_empty() || m == "default" => config.primary_model.clone(),
+        m if m.starts_with("claude-") => config.primary_model.clone(),
         other => other.to_string(),
     }
+}
+
+fn request_has_thinking(req: &anthropic::AnthropicRequest) -> bool {
+    if let Some(thinking) = &req.thinking {
+        return !thinking.thinking_type.eq_ignore_ascii_case("disabled");
+    }
+
+    req.extra
+        .get("thinking")
+        .and_then(|value| value.get("type").and_then(|type_value| type_value.as_str()))
+        .map(|value| !value.eq_ignore_ascii_case("disabled"))
+        .is_some()
 }
 
 pub async fn proxy_handler(
@@ -49,9 +61,12 @@ pub async fn proxy_handler(
                     match &blocks[0] {
                         anthropic::ContentBlock::Text { .. } => "text_block",
                         anthropic::ContentBlock::Image { .. } => "image_block",
+                        anthropic::ContentBlock::Document { .. } => "document_block",
                         anthropic::ContentBlock::ToolUse { .. } => "tool_use_block",
                         anthropic::ContentBlock::ToolResult { .. } => "tool_result_block",
                         anthropic::ContentBlock::Thinking { .. } => "thinking_block",
+                        anthropic::ContentBlock::ServerToolUse { .. } => "server_tool_use_block",
+                        anthropic::ContentBlock::SearchResult { .. } => "search_result_block",
                         anthropic::ContentBlock::Other => "unknown_block",
                     }
                 }
@@ -61,27 +76,75 @@ pub async fn proxy_handler(
     }
     tracing::debug!("Streaming: {}", is_streaming);
 
-    let model = if req
-        .extra
-        .get("thinking")
-        .and_then(|v| v.get("type"))
-        .is_some()
-    {
+    let model = if request_has_thinking(&req) {
         config
             .reasoning_model
             .clone()
-            .unwrap_or_else(|| config.model.clone())
+            .unwrap_or_else(|| config.primary_model.clone())
     } else {
         map_model(&req.model, &config)
     };
 
-    let openai_req = transform::anthropic_to_openai(req, &model, config.backend_profile)?;
+    let openai_req =
+        transform::anthropic_to_openai(req, &model, config.backend_profile, config.compat_mode)?;
 
     if is_streaming {
         handle_streaming(config, client, openai_req).await
     } else {
         handle_non_streaming(config, client, openai_req).await
     }
+}
+
+pub async fn count_tokens_handler(
+    Extension(config): Extension<Arc<Config>>,
+    Json(req): Json<anthropic::AnthropicRequest>,
+) -> ProxyResult<Json<anthropic::CountTokensResponse>> {
+    let model = if request_has_thinking(&req) {
+        config
+            .reasoning_model
+            .clone()
+            .unwrap_or_else(|| config.primary_model.clone())
+    } else {
+        map_model(&req.model, &config)
+    };
+    let openai_req =
+        transform::anthropic_to_openai(req, &model, config.backend_profile, config.compat_mode)?;
+    let serialized = serde_json::to_string(&openai_req)?;
+    let estimated = std::cmp::max(1, serialized.chars().count() / 4);
+    Ok(Json(anthropic::CountTokensResponse {
+        input_tokens: estimated,
+    }))
+}
+
+pub async fn models_handler(
+    Extension(config): Extension<Arc<Config>>,
+    Extension(client): Extension<Client>,
+) -> ProxyResult<Response> {
+    let url = config.models_url();
+    let mut req_builder = client.get(&url).timeout(Duration::from_secs(60));
+
+    if let Some(api_key) = &config.api_key {
+        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req_builder.send().await.map_err(ProxyError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(ProxyError::Http)?;
+
+    if !status.is_success() {
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status,
+            String::from_utf8_lossy(&body)
+        )));
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    Ok((headers, body).into_response())
 }
 
 async fn handle_non_streaming(
@@ -120,8 +183,12 @@ async fn handle_non_streaming(
     }
 
     let openai_resp: openai::OpenAIResponse = response.json().await?;
-    let anthropic_resp =
-        transform::openai_to_anthropic(openai_resp, &openai_req.model, config.backend_profile)?;
+    let anthropic_resp = transform::openai_to_anthropic(
+        openai_resp,
+        &openai_req.model,
+        config.backend_profile,
+        config.compat_mode,
+    )?;
 
     Ok(Json(anthropic_resp).into_response())
 }
@@ -162,7 +229,12 @@ async fn handle_streaming(
     }
 
     let stream = response.bytes_stream();
-    let sse_stream = create_sse_stream(stream, openai_req.model.clone(), config.backend_profile);
+    let sse_stream = create_sse_stream(
+        stream,
+        openai_req.model.clone(),
+        config.backend_profile,
+        config.compat_mode,
+    );
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -179,6 +251,7 @@ fn create_sse_stream(
     stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
     fallback_model: String,
     profile: BackendProfile,
+    compat_mode: CompatMode,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let mut buffer = String::new();
@@ -186,8 +259,11 @@ fn create_sse_stream(
         let mut current_model = None;
         let mut next_content_index = 0usize;
         let mut has_sent_message_start = false;
+        let mut has_sent_message_delta = false;
+        let mut has_sent_message_stop = false;
         let mut active_block: Option<ActiveBlock> = None;
         let mut tool_states: BTreeMap<usize, ToolCallState> = BTreeMap::new();
+        let mut think_filter = ThinkTagStreamFilter::default();
 
         pin!(stream);
 
@@ -232,7 +308,24 @@ fn create_sse_stream(
                         };
 
                         if data.trim() == "[DONE]" {
-                            yield Ok(Bytes::from(message_stop_sse()));
+                            if let Some(previous) = active_block.take() {
+                                yield Ok(Bytes::from(stop_block_sse(previous.index())));
+                            }
+                            if has_sent_message_start && !has_sent_message_delta {
+                                let event = anthropic::StreamEvent::MessageDelta {
+                                    delta: anthropic::MessageDeltaData {
+                                        stop_reason: Some("end_turn".to_string()),
+                                        stop_sequence: (),
+                                    },
+                                    usage: None,
+                                };
+                                yield Ok(Bytes::from(sse_event("message_delta", &event)));
+                                has_sent_message_delta = true;
+                            }
+                            if has_sent_message_start && !has_sent_message_stop {
+                                yield Ok(Bytes::from(message_stop_sse()));
+                                has_sent_message_stop = true;
+                            }
                             continue;
                         }
 
@@ -273,44 +366,68 @@ fn create_sse_stream(
 
                                 if let Some(reasoning) = &choice.delta.reasoning {
                                     if !reasoning.is_empty() {
-                                        if !profile.supports_reasoning() {
+                                        if !profile.supports_reasoning() && compat_mode.is_strict() {
                                             yield Ok(Bytes::from(stream_error_sse(
                                                 "reasoning deltas are not supported by the active backend profile",
                                             )));
                                             break;
                                         }
 
-                                        let (idx, transitions) = transition_to_thinking(
-                                            &mut active_block,
-                                            &mut next_content_index,
-                                        );
-                                        for event in transitions {
-                                            yield Ok(Bytes::from(event));
+                                        if profile.supports_reasoning() {
+                                            let (idx, transitions) = transition_to_thinking(
+                                                &mut active_block,
+                                                &mut next_content_index,
+                                            );
+                                            for event in transitions {
+                                                yield Ok(Bytes::from(event));
+                                            }
+                                            yield Ok(Bytes::from(delta_block_sse(
+                                                idx,
+                                                anthropic::ContentBlockDeltaData::ThinkingDelta {
+                                                    thinking: reasoning.clone(),
+                                                },
+                                            )));
                                         }
-                                        yield Ok(Bytes::from(delta_block_sse(
-                                            idx,
-                                            anthropic::ContentBlockDeltaData::ThinkingDelta {
-                                                thinking: reasoning.clone(),
-                                            },
-                                        )));
                                     }
                                 }
 
                                 if let Some(content) = &choice.delta.content {
                                     if !content.is_empty() {
-                                        let (idx, transitions) = transition_to_text(
-                                            &mut active_block,
-                                            &mut next_content_index,
-                                        );
-                                        for event in transitions {
-                                            yield Ok(Bytes::from(event));
+                                        let (embedded_reasoning, visible_text) = think_filter.push(content);
+
+                                        if profile.supports_reasoning() {
+                                            for reasoning in embedded_reasoning {
+                                                let (idx, transitions) = transition_to_thinking(
+                                                    &mut active_block,
+                                                    &mut next_content_index,
+                                                );
+                                                for event in transitions {
+                                                    yield Ok(Bytes::from(event));
+                                                }
+                                                yield Ok(Bytes::from(delta_block_sse(
+                                                    idx,
+                                                    anthropic::ContentBlockDeltaData::ThinkingDelta {
+                                                        thinking: reasoning,
+                                                    },
+                                                )));
+                                            }
                                         }
-                                        yield Ok(Bytes::from(delta_block_sse(
-                                            idx,
-                                            anthropic::ContentBlockDeltaData::TextDelta {
-                                                text: content.clone(),
-                                            },
-                                        )));
+
+                                        if !visible_text.is_empty() {
+                                            let (idx, transitions) = transition_to_text(
+                                                &mut active_block,
+                                                &mut next_content_index,
+                                            );
+                                            for event in transitions {
+                                                yield Ok(Bytes::from(event));
+                                            }
+                                            yield Ok(Bytes::from(delta_block_sse(
+                                                idx,
+                                                anthropic::ContentBlockDeltaData::TextDelta {
+                                                    text: visible_text,
+                                                },
+                                            )));
+                                        }
                                     }
                                 }
 
@@ -343,6 +460,9 @@ fn create_sse_stream(
                                                 }
                                             }
                                         } else if active_block != Some(ActiveBlock::ToolUse(tool_index, state.content_index.unwrap())) {
+                                            if !compat_mode.is_strict() {
+                                                continue;
+                                            }
                                             yield Ok(Bytes::from(stream_error_sse(
                                                 "interleaved tool call deltas are not supported safely",
                                             )));
@@ -381,6 +501,11 @@ fn create_sse_stream(
                                         }),
                                     };
                                     yield Ok(Bytes::from(sse_event("message_delta", &event)));
+                                    has_sent_message_delta = true;
+                                    if !has_sent_message_stop {
+                                        yield Ok(Bytes::from(message_stop_sse()));
+                                        has_sent_message_stop = true;
+                                    }
                                 }
                             }
                         }
@@ -393,14 +518,57 @@ fn create_sse_stream(
                 }
             }
         }
+
+        let (embedded_reasoning, visible_tail) = think_filter.finish();
+        if profile.supports_reasoning() {
+            for reasoning in embedded_reasoning {
+                let (idx, transitions) =
+                    transition_to_thinking(&mut active_block, &mut next_content_index);
+                for event in transitions {
+                    yield Ok(Bytes::from(event));
+                }
+                yield Ok(Bytes::from(delta_block_sse(
+                    idx,
+                    anthropic::ContentBlockDeltaData::ThinkingDelta { thinking: reasoning },
+                )));
+            }
+        }
+        if !visible_tail.is_empty() {
+            let (idx, transitions) = transition_to_text(&mut active_block, &mut next_content_index);
+            for event in transitions {
+                yield Ok(Bytes::from(event));
+            }
+            yield Ok(Bytes::from(delta_block_sse(
+                idx,
+                anthropic::ContentBlockDeltaData::TextDelta { text: visible_tail },
+            )));
+        }
+        if let Some(previous) = active_block.take() {
+            yield Ok(Bytes::from(stop_block_sse(previous.index())));
+        }
+        if has_sent_message_start && !has_sent_message_delta {
+            let event = anthropic::StreamEvent::MessageDelta {
+                delta: anthropic::MessageDeltaData {
+                    stop_reason: Some("end_turn".to_string()),
+                    stop_sequence: (),
+                },
+                usage: None,
+            };
+            yield Ok(Bytes::from(sse_event("message_delta", &event)));
+        }
+        if has_sent_message_start && !has_sent_message_stop {
+            yield Ok(Bytes::from(message_stop_sse()));
+        }
     }
 }
 
 pub struct Config {
     pub backend_url: String,
     pub backend_profile: BackendProfile,
-    pub model: String,
+    pub compat_mode: CompatMode,
+    pub primary_model: String,
     pub reasoning_model: Option<String>,
+    pub fallback_models: Vec<String>,
     pub api_key: Option<String>,
     pub ingress_api_key: Option<String>,
     pub allow_origins: Vec<String>,
@@ -409,6 +577,33 @@ pub struct Config {
 
 impl Config {
     pub fn from_env() -> Self {
+        let legacy_model = std::env::var("ANTHMORPH_MODEL").ok();
+        let primary_model = std::env::var("ANTHMORPH_PRIMARY_MODEL")
+            .ok()
+            .or_else(|| {
+                legacy_model.as_ref().and_then(|value| {
+                    value
+                        .split(',')
+                        .next()
+                        .map(str::trim)
+                        .map(ToOwned::to_owned)
+                })
+            })
+            .unwrap_or_else(|| "Qwen/Qwen3.5-397B-A17B-TEE".to_string());
+        let fallback_models = std::env::var("ANTHMORPH_FALLBACK_MODELS")
+            .ok()
+            .or_else(|| legacy_model.clone())
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .filter(|s| *s != primary_model)
+                    .map(ToOwned::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Self {
             backend_url: std::env::var("ANTHMORPH_BACKEND_URL")
                 .unwrap_or_else(|_| "https://llm.chutes.ai/v1".to_string()),
@@ -416,11 +611,13 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(BackendProfile::Chutes),
-            model: std::env::var("ANTHMORPH_MODEL").unwrap_or_else(|_| {
-                "Qwen/Qwen3.5-397B-A17B-TEE,zai-org/GLM-5-TEE,deepseek-ai/DeepSeek-V3.2-TEE"
-                    .to_string()
-            }),
+            compat_mode: std::env::var("ANTHMORPH_COMPAT_MODE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(CompatMode::Compat),
+            primary_model,
             reasoning_model: std::env::var("ANTHMORPH_REASONING_MODEL").ok(),
+            fallback_models,
             api_key: std::env::var("ANTHMORPH_API_KEY").ok(),
             ingress_api_key: std::env::var("ANTHMORPH_INGRESS_API_KEY").ok(),
             allow_origins: std::env::var("ANTHMORPH_ALLOWED_ORIGINS")
@@ -446,6 +643,10 @@ impl Config {
             self.backend_url.trim_end_matches('/')
         )
     }
+
+    pub fn models_url(&self) -> String {
+        format!("{}/models", self.backend_url.trim_end_matches('/'))
+    }
 }
 
 impl fmt::Debug for Config {
@@ -453,8 +654,10 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("backend_url", &self.backend_url)
             .field("backend_profile", &self.backend_profile.as_str())
-            .field("model", &self.model)
+            .field("compat_mode", &self.compat_mode.as_str())
+            .field("primary_model", &self.primary_model)
             .field("reasoning_model", &self.reasoning_model)
+            .field("fallback_models", &self.fallback_models)
             .field("api_key", &"<hidden>")
             .field("ingress_api_key", &"<hidden>")
             .field("allow_origins", &self.allow_origins)
@@ -484,6 +687,80 @@ struct ToolCallState {
     id: Option<String>,
     name: Option<String>,
     content_index: Option<usize>,
+}
+
+#[derive(Debug, Default)]
+struct ThinkTagStreamFilter {
+    carry: String,
+    in_think: bool,
+}
+
+impl ThinkTagStreamFilter {
+    fn push(&mut self, chunk: &str) -> (Vec<String>, String) {
+        let mut reasoning = Vec::new();
+        let mut visible = String::new();
+        let mut work = format!("{}{}", self.carry, chunk);
+        self.carry.clear();
+
+        loop {
+            if self.in_think {
+                if let Some(end) = work.find("</think>") {
+                    let think_text = &work[..end];
+                    if !think_text.is_empty() {
+                        reasoning.push(think_text.to_string());
+                    }
+                    work = work[end + "</think>".len()..].to_string();
+                    self.in_think = false;
+                    continue;
+                }
+
+                let split_at = partial_tag_suffix_start(&work, &["</think>"]);
+                if split_at > 0 {
+                    reasoning.push(work[..split_at].to_string());
+                }
+                self.carry = work[split_at..].to_string();
+                break;
+            }
+
+            if let Some(start) = work.find("<think>") {
+                visible.push_str(&work[..start]);
+                work = work[start + "<think>".len()..].to_string();
+                self.in_think = true;
+                continue;
+            }
+
+            let split_at = partial_tag_suffix_start(&work, &["<think>", "</think>"]);
+            visible.push_str(&work[..split_at]);
+            self.carry = work[split_at..].to_string();
+            break;
+        }
+
+        (reasoning, visible)
+    }
+
+    fn finish(&mut self) -> (Vec<String>, String) {
+        if self.carry.is_empty() {
+            return (Vec::new(), String::new());
+        }
+
+        let leftover = std::mem::take(&mut self.carry);
+        if self.in_think {
+            self.in_think = false;
+            (vec![leftover], String::new())
+        } else {
+            (Vec::new(), leftover)
+        }
+    }
+}
+
+fn partial_tag_suffix_start(value: &str, tags: &[&str]) -> usize {
+    for (start, _) in value.char_indices().rev() {
+        let suffix = &value[start..];
+        if tags.iter().any(|tag| tag.starts_with(suffix)) {
+            return start;
+        }
+    }
+    value.len()
 }
 
 fn transition_to_thinking(
@@ -734,6 +1011,7 @@ mod tests {
             stream::iter(chunks),
             "fallback".to_string(),
             BackendProfile::Chutes,
+            CompatMode::Strict,
         );
         tokio::pin!(sse);
 
@@ -747,6 +1025,47 @@ mod tests {
         assert!(joined.contains("\"partial_json\":\"{\\\"loc\""));
         assert!(joined.contains("\"partial_json\":\"ation"));
         assert_eq!(joined.matches("event: content_block_start").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn create_sse_stream_strips_think_tags_for_generic_compat() {
+        let first = serde_json::to_string(&json!({
+            "id": "abc",
+            "model": "minimax",
+            "choices": [{
+                "index": 0,
+                "delta": {
+                    "content": "<think>secret</think>visible"
+                },
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "completion_tokens": 4
+            }
+        }))
+        .unwrap();
+
+        let chunks = vec![
+            Ok(Bytes::from(format!("data: {first}\n\n"))),
+            Ok(Bytes::from("data: [DONE]\n\n")),
+        ];
+
+        let mut output = Vec::new();
+        let sse = create_sse_stream(
+            stream::iter(chunks),
+            "fallback".to_string(),
+            BackendProfile::OpenaiGeneric,
+            CompatMode::Compat,
+        );
+        tokio::pin!(sse);
+
+        while let Some(item) = sse.next().await {
+            output.push(String::from_utf8(item.unwrap().to_vec()).unwrap());
+        }
+
+        let joined = output.join("");
+        assert!(joined.contains("visible"));
+        assert!(!joined.contains("secret"));
     }
 
     #[test]
@@ -815,8 +1134,10 @@ mod tests {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::OpenaiGeneric,
-            model: "model".to_string(),
+            compat_mode: CompatMode::Strict,
+            primary_model: "model".to_string(),
             reasoning_model: None,
+            fallback_models: Vec::new(),
             api_key: None,
             ingress_api_key: Some("secret".to_string()),
             allow_origins: Vec::new(),
@@ -843,8 +1164,10 @@ mod tests {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::OpenaiGeneric,
-            model: "model".to_string(),
+            compat_mode: CompatMode::Strict,
+            primary_model: "model".to_string(),
             reasoning_model: None,
+            fallback_models: Vec::new(),
             api_key: None,
             ingress_api_key: Some("secret".to_string()),
             allow_origins: Vec::new(),
@@ -861,8 +1184,10 @@ mod tests {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::OpenaiGeneric,
-            model: "model".to_string(),
+            compat_mode: CompatMode::Strict,
+            primary_model: "model".to_string(),
             reasoning_model: None,
+            fallback_models: Vec::new(),
             api_key: None,
             ingress_api_key: None,
             allow_origins: vec!["https://allowed.example".to_string()],

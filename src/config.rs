@@ -37,3 +37,36 @@ impl FromStr for BackendProfile {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CompatMode {
+    Strict,
+    Compat,
+}
+
+impl CompatMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CompatMode::Strict => "strict",
+            CompatMode::Compat => "compat",
+        }
+    }
+
+    pub fn is_strict(self) -> bool {
+        matches!(self, CompatMode::Strict)
+    }
+}
+
+impl FromStr for CompatMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "strict" => Ok(Self::Strict),
+            "compat" | "compatible" => Ok(Self::Compat),
+            other => Err(format!(
+                "unsupported compat mode '{other}', expected 'strict' or 'compat'"
+            )),
+        }
+    }
+}

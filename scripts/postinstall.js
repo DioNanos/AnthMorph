@@ -46,7 +46,16 @@ function ensurePrebuiltPermissions() {
 
 function buildRelease() {
   if (!hasCargo()) {
-    console.error("[anthmorph] cargo not found; cannot build local binary");
+    console.error(
+      [
+        "[anthmorph] cargo not found; cannot build a local Linux/macOS binary.",
+        "[anthmorph] Supported install paths:",
+        "  1. install Rust/Cargo and rerun the install",
+        "  2. run scripts/docker_build_linux.sh from the package checkout",
+        "  3. use Termux on Android/aarch64 to consume the bundled prebuilt",
+        "[anthmorph] See docs/PACKAGING.md for details.",
+      ].join("\n"),
+    );
     process.exit(1);
   }
 

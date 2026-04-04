@@ -6,7 +6,7 @@ mod transform;
 
 use axum::{routing::post, Extension, Router};
 use clap::Parser;
-use config::BackendProfile;
+use config::{BackendProfile, CompatMode};
 use proxy::{build_cors_layer, Config};
 use reqwest::Client;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ struct Cli {
     api_key: Option<String>,
     #[arg(long, value_enum)]
     backend_profile: Option<BackendProfile>,
+    #[arg(long, value_enum)]
+    compat_mode: Option<CompatMode>,
     #[arg(long)]
     ingress_api_key: Option<String>,
     #[arg(long)]
@@ -48,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         config.backend_url = url;
     }
     if let Some(m) = cli.model {
-        config.model = m;
+        config.primary_model = m;
     }
     if let Some(m) = cli.reasoning_model {
         config.reasoning_model = Some(m);
@@ -58,6 +60,9 @@ async fn main() -> anyhow::Result<()> {
     }
     if let Some(profile) = cli.backend_profile {
         config.backend_profile = profile;
+    }
+    if let Some(mode) = cli.compat_mode {
+        config.compat_mode = mode;
     }
     if let Some(k) = cli.ingress_api_key {
         config.ingress_api_key = Some(k);
@@ -77,7 +82,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("AnthMorph v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Backend URL: {}", config.backend_url);
     tracing::info!("Backend Profile: {}", config.backend_profile.as_str());
-    tracing::info!("Model: {}", config.model);
+    tracing::info!("Compat Mode: {}", config.compat_mode.as_str());
+    tracing::info!("Primary Model: {}", config.primary_model);
     if let Some(ref m) = config.reasoning_model {
         tracing::info!("Reasoning Model: {}", m);
     }
@@ -93,6 +99,11 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/messages", post(proxy::proxy_handler))
+        .route(
+            "/v1/messages/count_tokens",
+            post(proxy::count_tokens_handler),
+        )
+        .route("/v1/models", axum::routing::get(proxy::models_handler))
         .route("/health", axum::routing::get(health_handler))
         .layer(Extension(config.clone()))
         .layer(Extension(client))
@@ -115,6 +126,14 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn health_handler() -> &'static str {
-    "OK"
+async fn health_handler(
+    Extension(config): Extension<Arc<Config>>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "backend_profile": config.backend_profile.as_str(),
+        "compat_mode": config.compat_mode.as_str(),
+        "resolved_model": config.primary_model,
+        "port": config.port,
+    }))
 }

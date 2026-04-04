@@ -23,9 +23,27 @@ pub struct AnthropicRequest {
     #[serde(default)]
     pub tools: Option<Vec<Tool>>,
     #[serde(default)]
+    pub thinking: Option<ThinkingConfig>,
+    #[serde(default)]
+    pub output_config: Option<OutputConfig>,
+    #[serde(default)]
     pub stop_sequences: Option<Vec<String>>,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThinkingConfig {
+    #[serde(rename = "type")]
+    pub thinking_type: String,
+    #[serde(default, alias = "budgetTokens")]
+    pub budget_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OutputConfig {
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +133,8 @@ pub enum ContentBlock {
     Text { text: String },
     #[serde(rename = "image")]
     Image { source: ImageSource },
+    #[serde(rename = "document")]
+    Document { source: serde_json::Value },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -130,6 +150,20 @@ pub enum ContentBlock {
     },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
+    #[serde(rename = "server_tool_use")]
+    ServerToolUse {
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        input: Option<serde_json::Value>,
+    },
+    #[serde(rename = "search_result")]
+    SearchResult {
+        #[serde(default)]
+        query: Option<String>,
+        #[serde(default)]
+        content: Vec<serde_json::Value>,
+    },
     #[serde(other)]
     Other,
 }
@@ -280,4 +314,10 @@ pub struct MessageDeltaData {
 pub struct MessageDeltaUsage {
     #[serde(rename = "output_tokens")]
     pub output_tokens: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CountTokensResponse {
+    #[serde(rename = "input_tokens")]
+    pub input_tokens: usize,
 }

@@ -2,3 +2,9 @@
 /.anthmorph
 /node_modules
 /*.tgz
+/.env
+/.env.*
+*.log
+/dist
+/tmp
+.DS_Store

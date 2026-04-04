@@ -1,4 +1,4 @@
-use crate::config::BackendProfile;
+use crate::config::{BackendProfile, CompatMode};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use serde_json::{json, Value};
@@ -34,24 +34,126 @@ fn extract_tool_choice(
     }
 }
 
+fn has_thinking(req: &anthropic::AnthropicRequest) -> bool {
+    if let Some(thinking) = &req.thinking {
+        return !thinking.thinking_type.eq_ignore_ascii_case("disabled");
+    }
+
+    req.extra
+        .get("thinking")
+        .and_then(|v| v.get("type"))
+        .and_then(Value::as_str)
+        .map(|value| !value.eq_ignore_ascii_case("disabled"))
+        .is_some()
+}
+
+fn flatten_json_text(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(items) => items.iter().flat_map(flatten_json_text).collect(),
+        Value::Object(obj) => {
+            let mut parts = Vec::new();
+            if let Some(text) = obj.get("text").and_then(Value::as_str) {
+                parts.push(text.to_string());
+            }
+            if let Some(query) = obj.get("query").and_then(Value::as_str) {
+                parts.push(format!("query: {query}"));
+            }
+            if let Some(url) = obj.get("url").and_then(Value::as_str) {
+                parts.push(format!("url: {url}"));
+            }
+            if let Some(file_id) = obj.get("file_id").and_then(Value::as_str) {
+                parts.push(format!("file_id: {file_id}"));
+            }
+            if let Some(content) = obj.get("content") {
+                parts.extend(flatten_json_text(content));
+            }
+            parts
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn compat_document_marker(source: &Value) -> String {
+    let source_type = source
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+
+    match source_type {
+        "base64" => {
+            let media_type = source
+                .get("media_type")
+                .and_then(Value::as_str)
+                .unwrap_or("application/octet-stream");
+            format!("[document attachment omitted: {media_type}]")
+        }
+        "file" => {
+            let file_id = source
+                .get("file_id")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            format!("[document file reference: {file_id}]")
+        }
+        "url" => {
+            let url = source
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            format!("[document url: {url}]")
+        }
+        _ => "[document omitted]".to_string(),
+    }
+}
+
+fn strip_think_tags(text: &str) -> (Vec<String>, String) {
+    let mut reasoning = Vec::new();
+    let mut visible = String::new();
+    let mut rest = text;
+
+    while let Some(start) = rest.find("<think>") {
+        visible.push_str(&rest[..start]);
+        let after_open = &rest[start + "<think>".len()..];
+        if let Some(end) = after_open.find("</think>") {
+            let think_text = after_open[..end].trim();
+            if !think_text.is_empty() {
+                reasoning.push(think_text.to_string());
+            }
+            rest = &after_open[end + "</think>".len()..];
+        } else {
+            let think_text = after_open.trim();
+            if !think_text.is_empty() {
+                reasoning.push(think_text.to_string());
+            }
+            rest = "";
+            break;
+        }
+    }
+
+    visible.push_str(rest);
+    (reasoning, visible)
+}
+
 pub fn anthropic_to_openai(
     req: anthropic::AnthropicRequest,
     model: &str,
     profile: BackendProfile,
+    compat_mode: CompatMode,
 ) -> ProxyResult<openai::OpenAIRequest> {
+    let thinking_requested = has_thinking(&req);
+    let _thinking_budget = req.thinking.as_ref().and_then(|cfg| cfg.budget_tokens);
+    let _requested_effort = req
+        .output_config
+        .as_ref()
+        .and_then(|cfg| cfg.effort.as_deref());
+
     if req.max_tokens == 0 {
         return Err(ProxyError::Transform(
             "max_tokens must be greater than zero".to_string(),
         ));
     }
 
-    if req
-        .extra
-        .get("thinking")
-        .and_then(|v| v.get("type"))
-        .is_some()
-        && !profile.supports_reasoning()
-    {
+    if thinking_requested && !profile.supports_reasoning() && compat_mode.is_strict() {
         return Err(ProxyError::Transform(format!(
             "thinking is not supported by backend profile {}",
             profile.as_str()
@@ -82,7 +184,7 @@ pub fn anthropic_to_openai(
     }
 
     for msg in req.messages {
-        openai_messages.extend(convert_message(msg, profile)?);
+        openai_messages.extend(convert_message(msg, profile, compat_mode)?);
     }
 
     let tools = req.tools.and_then(|tools| {
@@ -131,6 +233,7 @@ pub fn anthropic_to_openai(
 fn convert_message(
     msg: anthropic::Message,
     profile: BackendProfile,
+    compat_mode: CompatMode,
 ) -> ProxyResult<Vec<openai::Message>> {
     let mut result = Vec::new();
 
@@ -157,6 +260,11 @@ fn convert_message(
                         let data_url = format!("data:{};base64,{}", source.media_type, source.data);
                         current_content_parts.push(openai::ContentPart::ImageUrl {
                             image_url: openai::ImageUrl { url: data_url },
+                        });
+                    }
+                    anthropic::ContentBlock::Document { source } => {
+                        current_content_parts.push(openai::ContentPart::Text {
+                            data: compat_document_marker(&source),
                         });
                     }
                     anthropic::ContentBlock::ToolUse { id, name, input } => {
@@ -196,11 +304,49 @@ fn convert_message(
                         });
                     }
                     anthropic::ContentBlock::Thinking { thinking } => {
+                        if !compat_mode.is_strict() {
+                            current_content_parts.push(openai::ContentPart::Text {
+                                data: format!("[assistant thinking omitted]\n{thinking}"),
+                            });
+                            continue;
+                        }
                         return Err(ProxyError::Transform(format!(
                             "assistant thinking blocks are not supported by backend profile {} (received {} chars)",
                             profile.as_str(),
                             thinking.len()
                         )));
+                    }
+                    anthropic::ContentBlock::ServerToolUse { name, input } => {
+                        let tool_name = name.unwrap_or_else(|| "server_tool".to_string());
+                        let rendered_input = input
+                            .map(|value| serde_json::to_string(&value).unwrap_or_default())
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or_else(|| "{}".to_string());
+                        current_content_parts.push(openai::ContentPart::Text {
+                            data: format!(
+                                "[server tool use omitted: {} {}]",
+                                tool_name, rendered_input
+                            ),
+                        });
+                    }
+                    anthropic::ContentBlock::SearchResult { query, content } => {
+                        let mut parts = Vec::new();
+                        if let Some(query) = query {
+                            parts.push(format!("query: {query}"));
+                        }
+                        for value in content {
+                            parts.extend(flatten_json_text(&value));
+                        }
+                        let rendered = parts
+                            .into_iter()
+                            .filter(|part| !part.trim().is_empty())
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        if !rendered.is_empty() {
+                            current_content_parts.push(openai::ContentPart::Text {
+                                data: format!("[search result]\n{rendered}"),
+                            });
+                        }
                     }
                     anthropic::ContentBlock::Other => {}
                 }
@@ -268,6 +414,7 @@ pub fn openai_to_anthropic(
     resp: openai::OpenAIResponse,
     fallback_model: &str,
     profile: BackendProfile,
+    compat_mode: CompatMode,
 ) -> ProxyResult<anthropic::AnthropicResponse> {
     let choice = resp
         .choices
@@ -276,24 +423,40 @@ pub fn openai_to_anthropic(
 
     let mut content = Vec::new();
 
+    let raw_content = choice.message.content.clone().unwrap_or_default();
+    let (embedded_reasoning, visible_text) = strip_think_tags(&raw_content);
+
     if let Some(reasoning) = choice
         .message
         .reasoning_content
         .as_ref()
         .filter(|s| !s.is_empty())
     {
-        if !profile.supports_reasoning() {
+        if !profile.supports_reasoning() && compat_mode.is_strict() {
             return Err(ProxyError::Transform(format!(
                 "backend profile {} returned reasoning content that cannot be represented safely",
                 profile.as_str()
             )));
         }
-        content.push(anthropic::ResponseContent::Thinking {
-            thinking: reasoning.clone(),
-        });
+        if profile.supports_reasoning() {
+            content.push(anthropic::ResponseContent::Thinking {
+                thinking: reasoning.clone(),
+            });
+        }
     }
-    if let Some(text) = choice.message.content.as_ref().filter(|s| !s.is_empty()) {
-        content.push(anthropic::ResponseContent::Text { text: text.clone() });
+
+    if choice.message.reasoning_content.is_none() && !embedded_reasoning.is_empty() {
+        if profile.supports_reasoning() {
+            for reasoning in embedded_reasoning {
+                content.push(anthropic::ResponseContent::Thinking {
+                    thinking: reasoning,
+                });
+            }
+        }
+    }
+
+    if !visible_text.trim().is_empty() {
+        content.push(anthropic::ResponseContent::Text { text: visible_text });
     }
 
     if let Some(tool_calls) = &choice.message.tool_calls {
@@ -372,6 +535,8 @@ mod tests {
                 input_schema: json!({"type":"object","properties":{"city":{"type":"string","format":"city"}}}),
                 tool_type: None,
             }]),
+            thinking: None,
+            output_config: None,
             stop_sequences: Some(vec!["STOP".to_string()]),
             extra: serde_json::Map::new(),
         }
@@ -380,14 +545,21 @@ mod tests {
     #[test]
     fn strips_top_k_for_generic_profile() {
         let req = sample_request();
-        let transformed = anthropic_to_openai(req, "model", BackendProfile::OpenaiGeneric).unwrap();
+        let transformed = anthropic_to_openai(
+            req,
+            "model",
+            BackendProfile::OpenaiGeneric,
+            CompatMode::Strict,
+        )
+        .unwrap();
         assert_eq!(transformed.top_k, None);
     }
 
     #[test]
     fn keeps_top_k_for_chutes_profile() {
         let req = sample_request();
-        let transformed = anthropic_to_openai(req, "model", BackendProfile::Chutes).unwrap();
+        let transformed =
+            anthropic_to_openai(req, "model", BackendProfile::Chutes, CompatMode::Strict).unwrap();
         assert_eq!(transformed.top_k, Some(40));
     }
 
@@ -401,7 +573,8 @@ mod tests {
             }]),
         }];
 
-        let err = anthropic_to_openai(req, "model", BackendProfile::Chutes).unwrap_err();
+        let err = anthropic_to_openai(req, "model", BackendProfile::Chutes, CompatMode::Strict)
+            .unwrap_err();
         assert!(err.to_string().contains("thinking blocks"));
     }
 
@@ -428,10 +601,13 @@ mod tests {
             stop_sequences: None,
             stream: None,
             tools: None,
+            thinking: None,
+            output_config: None,
             extra: Default::default(),
         };
 
-        let out = anthropic_to_openai(req, "model", BackendProfile::Chutes).unwrap();
+        let out =
+            anthropic_to_openai(req, "model", BackendProfile::Chutes, CompatMode::Strict).unwrap();
         assert_eq!(out.messages[0].role, "system");
         match out.messages[0].content.as_ref().unwrap() {
             openai::MessageContent::Text(text) => assert_eq!(text, "one\n\ntwo"),
@@ -459,7 +635,8 @@ mod tests {
             },
         };
 
-        let out = openai_to_anthropic(resp, "fallback", BackendProfile::Chutes).unwrap();
+        let out = openai_to_anthropic(resp, "fallback", BackendProfile::Chutes, CompatMode::Strict)
+            .unwrap();
         match &out.content[0] {
             anthropic::ResponseContent::Thinking { thinking } => assert_eq!(thinking, "chain"),
             other => panic!("expected thinking block, got {other:?}"),
@@ -485,7 +662,121 @@ mod tests {
             },
         };
 
-        let err = openai_to_anthropic(resp, "fallback", BackendProfile::OpenaiGeneric).unwrap_err();
+        let err = openai_to_anthropic(
+            resp,
+            "fallback",
+            BackendProfile::OpenaiGeneric,
+            CompatMode::Strict,
+        )
+        .unwrap_err();
         assert!(err.to_string().contains("reasoning content"));
+    }
+
+    #[test]
+    fn compat_mode_downgrades_assistant_thinking_history() {
+        let mut req = sample_request();
+        req.messages = vec![Message {
+            role: "assistant".to_string(),
+            content: MessageContent::Blocks(vec![ContentBlock::Thinking {
+                thinking: "hidden".to_string(),
+            }]),
+        }];
+
+        let out = anthropic_to_openai(
+            req,
+            "model",
+            BackendProfile::OpenaiGeneric,
+            CompatMode::Compat,
+        )
+        .unwrap();
+
+        let assistant = out
+            .messages
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("assistant message");
+
+        match assistant.content.as_ref() {
+            Some(openai::MessageContent::Text(_)) | Some(openai::MessageContent::Parts(_)) => {}
+            other => panic!("expected downgraded assistant content, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compat_mode_degrades_documents_and_search_results_into_text() {
+        let req = AnthropicRequest {
+            model: "claude".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: MessageContent::Blocks(vec![
+                    ContentBlock::Document {
+                        source: json!({
+                            "type": "url",
+                            "url": "https://example.com/file.pdf"
+                        }),
+                    },
+                    ContentBlock::SearchResult {
+                        query: Some("weather".to_string()),
+                        content: vec![json!({"type": "text", "text": "Sunny and 68F"})],
+                    },
+                ]),
+            }],
+            system: None,
+            stream: Some(true),
+            max_tokens: 64,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            tools: None,
+            thinking: None,
+            output_config: None,
+            stop_sequences: None,
+            extra: Default::default(),
+        };
+
+        let out = anthropic_to_openai(
+            req,
+            "model",
+            BackendProfile::OpenaiGeneric,
+            CompatMode::Compat,
+        )
+        .unwrap();
+        let rendered = serde_json::to_value(&out.messages[0]).unwrap().to_string();
+        assert!(rendered.contains("document url"));
+        assert!(rendered.contains("Sunny and 68F"));
+    }
+
+    #[test]
+    fn generic_compat_strips_embedded_think_tags() {
+        let resp = openai::OpenAIResponse {
+            id: Some("id1".to_string()),
+            model: Some("backend".to_string()),
+            choices: vec![openai::Choice {
+                message: openai::ChoiceMessage {
+                    content: Some("<think>hidden chain</think>visible answer".to_string()),
+                    tool_calls: None,
+                    reasoning_content: None,
+                },
+                finish_reason: Some("stop".to_string()),
+            }],
+            usage: openai::Usage {
+                prompt_tokens: 10,
+                completion_tokens: 5,
+            },
+        };
+
+        let out = openai_to_anthropic(
+            resp,
+            "fallback",
+            BackendProfile::OpenaiGeneric,
+            CompatMode::Compat,
+        )
+        .unwrap();
+
+        assert_eq!(out.content.len(), 1);
+        match &out.content[0] {
+            anthropic::ResponseContent::Text { text } => assert_eq!(text, "visible answer"),
+            other => panic!("expected visible text only, got {other:?}"),
+        }
     }
 }

@@ -27,17 +27,26 @@ usage:
   anthmorphctl status
   anthmorphctl logs
   anthmorphctl print-config
+  anthmorphctl bootstrap claude-code [options]
   anthmorphctl help
 
 options for init:
   --port PORT
   --backend-url URL
   --model MODEL
+  --compat-mode strict|compat
   --reasoning-model MODEL
   --ingress-api-key VALUE
   --allow-origin ORIGIN
   --key-env ENV_NAME
   --api-key VALUE --save-key
+
+options for bootstrap claude-code:
+  --write
+  --base-url URL
+  --token VALUE
+  --model MODEL
+  --timeout-ms MS
 
 notes:
   - by default the API key is not saved; use set key-env or --key-env
@@ -63,9 +72,11 @@ save_config() {
   tmp_file=$CONFIG_FILE.tmp
   {
     printf 'BACKEND_PROFILE=%s\n' "${BACKEND_PROFILE:-}"
+    printf 'COMPAT_MODE=%s\n' "${COMPAT_MODE:-strict}"
     printf 'BACKEND_URL=%s\n' "${BACKEND_URL:-}"
-    printf 'MODEL=%s\n' "${MODEL:-}"
+    printf 'PRIMARY_MODEL=%s\n' "${PRIMARY_MODEL:-}"
     printf 'REASONING_MODEL=%s\n' "${REASONING_MODEL:-}"
+    printf 'FALLBACK_MODELS=%s\n' "${FALLBACK_MODELS:-}"
     printf 'PORT=%s\n' "${PORT:-3000}"
     printf 'INGRESS_API_KEY=%s\n' "${INGRESS_API_KEY:-}"
     printf 'ALLOWED_ORIGINS=%s\n' "${ALLOWED_ORIGINS:-}"
@@ -122,6 +133,7 @@ ensure_bin_ready() {
 
   if ! command -v cargo >/dev/null 2>&1; then
     echo "cargo not found and anthmorph binary is missing or outdated" >&2
+    echo "build a Linux binary with scripts/docker_build_linux.sh or install Rust/Cargo locally" >&2
     return 1
   fi
 
@@ -153,7 +165,11 @@ parse_common_init_args() {
         shift 2
         ;;
       --model)
-        MODEL=$2
+        PRIMARY_MODEL=$2
+        shift 2
+        ;;
+      --compat-mode)
+        COMPAT_MODE=$2
         shift 2
         ;;
       --reasoning-model)
@@ -202,9 +218,11 @@ init_cmd() {
   shift
 
   BACKEND_PROFILE=
+  COMPAT_MODE=compat
   BACKEND_URL=
-  MODEL=
+  PRIMARY_MODEL=
   REASONING_MODEL=
+  FALLBACK_MODELS=
   PORT=3000
   INGRESS_API_KEY=
   ALLOWED_ORIGINS=
@@ -216,13 +234,14 @@ init_cmd() {
     chutes)
       BACKEND_PROFILE=chutes
       BACKEND_URL=https://llm.chutes.ai/v1
-      MODEL=Qwen/Qwen3.5-397B-A17B-TEE,zai-org/GLM-5-TEE,deepseek-ai/DeepSeek-V3.2-TEE
+      PRIMARY_MODEL=Qwen/Qwen3.5-397B-A17B-TEE
+      FALLBACK_MODELS=zai-org/GLM-5-TEE,deepseek-ai/DeepSeek-V3.2-TEE
       API_KEY_ENV=CHUTES_API_KEY
       ;;
     minimax)
       BACKEND_PROFILE=openai-generic
       BACKEND_URL=${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
-      MODEL=${MINIMAX_MODEL:-MiniMax-M2.5}
+      PRIMARY_MODEL=${MINIMAX_MODEL:-MiniMax-M2.5}
       API_KEY_ENV=MINIMAX_API_KEY
       ;;
     openai)
@@ -236,7 +255,7 @@ init_cmd() {
 
   parse_common_init_args "$@"
 
-  if [ -z "$BACKEND_URL" ] || [ -z "$MODEL" ] || [ -z "$BACKEND_PROFILE" ]; then
+  if [ -z "$BACKEND_URL" ] || [ -z "$PRIMARY_MODEL" ] || [ -z "$BACKEND_PROFILE" ]; then
     echo "backend profile, backend url and model are required" >&2
     exit 1
   fi
@@ -247,6 +266,112 @@ init_cmd() {
 
   save_config
   echo "saved config to $CONFIG_FILE"
+}
+
+bootstrap_claude_code_cmd() {
+  ensure_config
+  load_config
+
+  write_mode=0
+  bootstrap_base_url=
+  bootstrap_token=
+  bootstrap_model=
+  bootstrap_timeout_ms=6000000
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --write)
+        write_mode=1
+        shift
+        ;;
+      --base-url)
+        bootstrap_base_url=$2
+        shift 2
+        ;;
+      --token)
+        bootstrap_token=$2
+        shift 2
+        ;;
+      --model)
+        bootstrap_model=$2
+        shift 2
+        ;;
+      --timeout-ms)
+        bootstrap_timeout_ms=$2
+        shift 2
+        ;;
+      *)
+        echo "unknown bootstrap option: $1" >&2
+        exit 1
+        ;;
+    esac
+  done
+
+  [ -n "$bootstrap_base_url" ] || bootstrap_base_url="http://127.0.0.1:${PORT:-3000}"
+  [ -n "$bootstrap_model" ] || bootstrap_model="${PRIMARY_MODEL:-}"
+  [ -n "$bootstrap_token" ] || bootstrap_token="${INGRESS_API_KEY:-anthmorph-local}"
+
+  settings_json=$(BOOTSTRAP_TOKEN="$bootstrap_token" \
+    BOOTSTRAP_BASE_URL="$bootstrap_base_url" \
+    BOOTSTRAP_TIMEOUT_MS="$bootstrap_timeout_ms" \
+    BOOTSTRAP_MODEL="$bootstrap_model" \
+    python3 - <<'PY'
+import json
+import os
+
+model = os.environ["BOOTSTRAP_MODEL"]
+payload = {
+    "env": {
+        "ANTHROPIC_AUTH_TOKEN": os.environ["BOOTSTRAP_TOKEN"],
+        "ANTHROPIC_BASE_URL": os.environ["BOOTSTRAP_BASE_URL"],
+        "API_TIMEOUT_MS": os.environ["BOOTSTRAP_TIMEOUT_MS"],
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+        "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
+        "CLAUDE_CODE_SUBAGENT_MODEL": model,
+        "ANTHROPIC_SMALL_FAST_MODEL": model,
+    }
+}
+print(json.dumps(payload, indent=2))
+PY
+)
+
+  if [ "$write_mode" -eq 1 ]; then
+    mkdir -p "$HOME/.claude"
+    SETTINGS_FILE="$HOME/.claude/settings.json" SETTINGS_JSON="$settings_json" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+settings_path = Path(os.environ["SETTINGS_FILE"])
+incoming = json.loads(os.environ["SETTINGS_JSON"])
+existing = {}
+if settings_path.exists():
+    try:
+        existing = json.loads(settings_path.read_text())
+    except Exception:
+        existing = {}
+
+merged_env = existing.get("env", {}) if isinstance(existing.get("env"), dict) else {}
+merged_env.update(incoming.get("env", {}))
+existing["env"] = merged_env
+settings_path.write_text(json.dumps(existing, indent=2) + "\n")
+
+claude_json_path = Path.home() / ".claude.json"
+claude_json = {}
+if claude_json_path.exists():
+    try:
+        claude_json = json.loads(claude_json_path.read_text())
+    except Exception:
+        claude_json = {}
+claude_json["hasCompletedOnboarding"] = True
+claude_json_path.write_text(json.dumps(claude_json, indent=2) + "\n")
+PY
+    echo "wrote $HOME/.claude/settings.json"
+    echo "set $HOME/.claude.json onboarding flag"
+  else
+    printf '%s\n' "$settings_json"
+  fi
 }
 
 set_cmd() {
@@ -337,8 +462,9 @@ start_cmd() {
   set -- "$BIN_PATH" \
     --port "$PORT" \
     --backend-profile "$BACKEND_PROFILE" \
+    --compat-mode "${COMPAT_MODE:-strict}" \
     --backend-url "$BACKEND_URL" \
-    --model "$MODEL" \
+    --model "$PRIMARY_MODEL" \
     --api-key "$api_key"
 
   if [ -n "${REASONING_MODEL:-}" ]; then
@@ -410,8 +536,10 @@ status_cmd() {
     fi
   fi
   echo "profile: ${BACKEND_PROFILE:-}"
+  echo "compat_mode: ${COMPAT_MODE:-strict}"
   echo "backend_url: ${BACKEND_URL:-}"
-  echo "model: ${MODEL:-}"
+  echo "primary_model: ${PRIMARY_MODEL:-}"
+  echo "fallback_models: ${FALLBACK_MODELS:-}"
   echo "port: ${PORT:-}"
   if [ -n "${API_KEY_ENV:-}" ]; then
     key_source=env:$API_KEY_ENV
@@ -471,6 +599,20 @@ case "$cmd" in
     ;;
   print-config)
     print_config_cmd
+    ;;
+  bootstrap)
+    shift
+    subcmd=${1:-}
+    case "$subcmd" in
+      claude-code)
+        shift
+        bootstrap_claude_code_cmd "$@"
+        ;;
+      *)
+        echo "unknown bootstrap target: $subcmd" >&2
+        exit 1
+        ;;
+    esac
     ;;
   help|-h|--help)
     usage

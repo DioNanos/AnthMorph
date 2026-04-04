@@ -10,18 +10,21 @@ RESPONSE_FILE=${TMPDIR:-/tmp}/anthmorph-smoke-${BACKEND}-${PORT}.json
 case "$BACKEND" in
   chutes)
     PROFILE=chutes
+    COMPAT_MODE=${CHUTES_COMPAT_MODE:-compat}
     BACKEND_URL=${CHUTES_BASE_URL:-https://llm.chutes.ai/v1}
-    MODEL=${CHUTES_MODEL:-Qwen/Qwen3.5-397B-A17B-TEE,zai-org/GLM-5-TEE,deepseek-ai/DeepSeek-V3.2-TEE}
+    MODEL=${CHUTES_MODEL:-Qwen/Qwen3.5-397B-A17B-TEE}
     API_KEY=${CHUTES_API_KEY:?CHUTES_API_KEY is required}
     ;;
   alibaba)
     PROFILE=openai-generic
+    COMPAT_MODE=${ALIBABA_COMPAT_MODE:-compat}
     BACKEND_URL=${ALIBABA_BASE_URL:-https://coding-intl.dashscope.aliyuncs.com/v1}
     MODEL=${ALIBABA_MODEL:-qwen3-coder-plus}
     API_KEY=${ALIBABA_CODE_API_KEY:?ALIBABA_CODE_API_KEY is required}
     ;;
   minimax)
     PROFILE=openai-generic
+    COMPAT_MODE=${MINIMAX_COMPAT_MODE:-compat}
     BACKEND_URL=${MINIMAX_BASE_URL:-https://api.minimax.io/v1}
     MODEL=${MINIMAX_MODEL:-MiniMax-M2.5}
     API_KEY=${MINIMAX_API_KEY:?MINIMAX_API_KEY is required}
@@ -44,7 +47,7 @@ if [ ! -x ./target/debug/anthmorph ]; then
   cargo build --quiet
 fi
 
-./target/debug/anthmorph   --port "$PORT"   --backend-profile "$PROFILE"   --backend-url "$BACKEND_URL"   --model "$MODEL"   --api-key "$API_KEY"   >"$LOG_FILE" 2>&1 &
+./target/debug/anthmorph   --port "$PORT"   --backend-profile "$PROFILE"   --compat-mode "$COMPAT_MODE"   --backend-url "$BACKEND_URL"   --model "$MODEL"   --api-key "$API_KEY"   >"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 
 READY=0
