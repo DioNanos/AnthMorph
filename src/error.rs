@@ -25,12 +25,18 @@ impl axum::response::IntoResponse for ProxyError {
         let (status, error_type) = match &self {
             ProxyError::Http(_) => (StatusCode::BAD_GATEWAY, "api_error"),
             ProxyError::Upstream(msg) => {
-                if msg.contains("401") || msg.contains("403") {
+                if msg.contains("unauthorized ingress") {
+                    (StatusCode::UNAUTHORIZED, "authentication_error")
+                } else if msg.contains("401") || msg.contains("403") {
                     (StatusCode::UNAUTHORIZED, "authentication_error")
                 } else if msg.contains("429") {
                     (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error")
                 } else if msg.contains("404") {
                     (StatusCode::NOT_FOUND, "not_found_error")
+                } else if msg.contains("503") || msg.contains("overloaded") {
+                    (StatusCode::SERVICE_UNAVAILABLE, "overloaded_error")
+                } else if msg.contains("413") || msg.contains("too large") {
+                    (StatusCode::PAYLOAD_TOO_LARGE, "request_too_large")
                 } else {
                     (StatusCode::BAD_GATEWAY, "api_error")
                 }
@@ -40,12 +46,21 @@ impl axum::response::IntoResponse for ProxyError {
             ProxyError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
         };
 
+        let request_id = format!(
+            "req_{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+
         let payload = serde_json::json!({
             "type": "error",
             "error": {
                 "type": error_type,
                 "message": self.to_string()
-            }
+            },
+            "request_id": request_id
         });
         (status, axum::Json(payload)).into_response()
     }

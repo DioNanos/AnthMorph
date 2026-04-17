@@ -1,6 +1,8 @@
 use crate::config::{BackendProfile, CompatMode};
 use crate::error::{ProxyError, ProxyResult};
+use crate::model_cache;
 use crate::models::{anthropic, openai};
+use crate::rate_limiter::SharedRateLimiter;
 use crate::transform::{self, generate_message_id};
 use axum::{
     body::Body,
@@ -18,6 +20,74 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::pin;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+
+fn redact_secrets(input: &str) -> String {
+    let mut result = input.to_string();
+    result = redact_pattern(&result, "Bearer ", 8);
+    result = redact_pattern(&result, "bearer ", 8);
+    for prefix in &["sk-", "sk_", "cpk_"] {
+        result = redact_pattern(&result, prefix, 20);
+    }
+    if result.len() > 2048 {
+        result.truncate(2048);
+        result.push_str("… [truncated]");
+    }
+    result
+}
+
+fn redact_pattern(input: &str, prefix: &str, min_token_len: usize) -> String {
+    let mut result = input.to_string();
+    let prefix_lower = prefix.to_lowercase();
+    let search_from_pos = |s: &str, start: usize, needle: &str| -> Option<usize> {
+        s[start..].find(needle).map(|p| start + p)
+    };
+    let mut offset = 0;
+    let needle = if prefix == prefix_lower {
+        prefix
+    } else {
+        prefix
+    };
+    while let Some(pos) = search_from_pos(&result, offset, needle) {
+        let token_start = pos + prefix.len();
+        let token_end = result[token_start..]
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '}' || c == ',')
+            .map(|i| token_start + i)
+            .unwrap_or(result.len());
+        if token_end - token_start >= min_token_len {
+            result.replace_range(token_start..token_end, "***");
+            offset = token_start + 3;
+        } else {
+            offset = token_start;
+        }
+        if offset >= result.len() {
+            break;
+        }
+    }
+    result
+}
+
+fn extract_client_key(headers: &HeaderMap) -> Option<String> {
+    let bearer = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let x_api_key = headers
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    bearer.or(x_api_key)
+}
+
+fn resolve_backend_key(client_key: Option<&str>, config: &Config) -> Option<String> {
+    client_key
+        .map(|s| s.to_string())
+        .or_else(|| config.api_key.clone())
+}
 
 fn map_model(client_model: &str, config: &Config) -> String {
     match client_model {
@@ -43,9 +113,21 @@ pub async fn proxy_handler(
     headers: HeaderMap,
     Extension(config): Extension<Arc<Config>>,
     Extension(client): Extension<Client>,
+    Extension(models_cache): Extension<model_cache::Cache>,
+    Extension(rate_limiter): Extension<Option<SharedRateLimiter>>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
     authorize_request(&headers, &config)?;
+
+    if let Some(limiter) = &rate_limiter {
+        let client_key = extract_client_key(&headers)
+            .unwrap_or_else(|| "anonymous".to_string());
+        if !limiter.check(&client_key).await {
+            return Err(ProxyError::Upstream(
+                "429 rate limit exceeded".to_string(),
+            ));
+        }
+    }
 
     let is_streaming = req.stream.unwrap_or(false);
 
@@ -82,16 +164,20 @@ pub async fn proxy_handler(
             .clone()
             .unwrap_or_else(|| config.primary_model.clone())
     } else {
-        map_model(&req.model, &config)
+        let mapped = map_model(&req.model, &config);
+        model_cache::normalize_model(&mapped, &models_cache).await
     };
 
     let openai_req =
         transform::anthropic_to_openai(req, &model, config.backend_profile, config.compat_mode)?;
 
+    let client_key = extract_client_key(&headers);
+    let backend_key = resolve_backend_key(client_key.as_deref(), &config);
+
     if is_streaming {
-        handle_streaming(config, client, openai_req).await
+        handle_streaming(config, client, openai_req, backend_key).await
     } else {
-        handle_non_streaming(config, client, openai_req).await
+        handle_non_streaming(config, client, openai_req, backend_key).await
     }
 }
 
@@ -117,13 +203,16 @@ pub async fn count_tokens_handler(
 }
 
 pub async fn models_handler(
+    headers: HeaderMap,
     Extension(config): Extension<Arc<Config>>,
     Extension(client): Extension<Client>,
 ) -> ProxyResult<Response> {
     let url = config.models_url();
     let mut req_builder = client.get(&url).timeout(Duration::from_secs(60));
 
-    if let Some(api_key) = &config.api_key {
+    let client_key = extract_client_key(&headers);
+    let backend_key = resolve_backend_key(client_key.as_deref(), &config);
+    if let Some(api_key) = &backend_key {
         req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
     }
 
@@ -151,6 +240,7 @@ async fn handle_non_streaming(
     config: Arc<Config>,
     client: Client,
     openai_req: openai::OpenAIRequest,
+    backend_key: Option<String>,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
     tracing::debug!("Sending non-streaming request to {}", url);
@@ -160,7 +250,7 @@ async fn handle_non_streaming(
         .json(&openai_req)
         .timeout(Duration::from_secs(300));
 
-    if let Some(api_key) = &config.api_key {
+    if let Some(api_key) = &backend_key {
         req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
     }
 
@@ -175,7 +265,7 @@ async fn handle_non_streaming(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        tracing::error!("Upstream error ({}): {}", status, error_text);
+        tracing::error!("Upstream error ({}): {}", status, redact_secrets(&error_text));
         return Err(ProxyError::Upstream(format!(
             "Upstream returned {}: {}",
             status, error_text
@@ -197,6 +287,7 @@ async fn handle_streaming(
     config: Arc<Config>,
     client: Client,
     openai_req: openai::OpenAIRequest,
+    backend_key: Option<String>,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
     tracing::debug!("Sending streaming request to {}", url);
@@ -206,7 +297,7 @@ async fn handle_streaming(
         .json(&openai_req)
         .timeout(Duration::from_secs(300));
 
-    if let Some(api_key) = &config.api_key {
+    if let Some(api_key) = &backend_key {
         req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
     }
 
@@ -221,7 +312,7 @@ async fn handle_streaming(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        tracing::error!("Upstream streaming error ({}): {}", status, error_text);
+        tracing::error!("Upstream streaming error ({}): {}", status, redact_secrets(&error_text));
         return Err(ProxyError::Upstream(format!(
             "Upstream returned {}: {}",
             status, error_text
@@ -234,6 +325,7 @@ async fn handle_streaming(
         openai_req.model.clone(),
         config.backend_profile,
         config.compat_mode,
+        config.stream_chunk_timeout_secs,
     );
 
     let mut headers = HeaderMap::new();
@@ -252,6 +344,7 @@ fn create_sse_stream(
     fallback_model: String,
     profile: BackendProfile,
     compat_mode: CompatMode,
+    chunk_timeout_secs: u64,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let mut buffer = String::new();
@@ -268,135 +361,115 @@ fn create_sse_stream(
         pin!(stream);
 
         let mut raw_buffer: Vec<u8> = Vec::new();
+        let chunk_timeout = Duration::from_secs(chunk_timeout_secs);
 
-        while let Some(chunk) = stream.next().await {
-            match chunk {
-                Ok(bytes) => {
-                    raw_buffer.extend_from_slice(&bytes);
+        loop {
+            let chunk_result = tokio::time::timeout(chunk_timeout, stream.next());
+            match chunk_result.await {
+                Ok(Some(chunk)) => match chunk {
+                    Ok(bytes) => {
+                        raw_buffer.extend_from_slice(&bytes);
 
-                    loop {
-                        match std::str::from_utf8(&raw_buffer) {
-                            Ok(text) => {
-                                buffer.push_str(&text.replace("\r\n", "\n"));
-                                raw_buffer.clear();
-                                break;
-                            }
-                            Err(e) => {
-                                let valid_up_to = e.valid_up_to();
-                                if valid_up_to > 0 {
-                                    let partial = std::str::from_utf8(&raw_buffer[..valid_up_to]).unwrap();
-                                    buffer.push_str(&partial.replace("\r\n", "\n"));
-                                    raw_buffer = raw_buffer[valid_up_to..].to_vec();
-                                }
-                                if raw_buffer.is_empty() || valid_up_to == 0 {
+                        loop {
+                            match std::str::from_utf8(&raw_buffer) {
+                                Ok(text) => {
+                                    buffer.push_str(&text.replace("\r\n", "\n"));
+                                    raw_buffer.clear();
                                     break;
                                 }
-                            }
-                        }
-                    }
-
-                    while let Some(pos) = buffer.find("\n\n") {
-                        let event_block = buffer[..pos].to_string();
-                        buffer = buffer[pos + 2..].to_string();
-
-                        if event_block.trim().is_empty() {
-                            continue;
-                        }
-
-                        let Some(data) = extract_sse_data(&event_block) else {
-                            continue;
-                        };
-
-                        if data.trim() == "[DONE]" {
-                            if let Some(previous) = active_block.take() {
-                                yield Ok(Bytes::from(stop_block_sse(previous.index())));
-                            }
-                            if has_sent_message_start && !has_sent_message_delta {
-                                let event = anthropic::StreamEvent::MessageDelta {
-                                    delta: anthropic::MessageDeltaData {
-                                        stop_reason: Some("end_turn".to_string()),
-                                        stop_sequence: (),
-                                    },
-                                    usage: None,
-                                };
-                                yield Ok(Bytes::from(sse_event("message_delta", &event)));
-                                has_sent_message_delta = true;
-                            }
-                            if has_sent_message_start && !has_sent_message_stop {
-                                yield Ok(Bytes::from(message_stop_sse()));
-                                has_sent_message_stop = true;
-                            }
-                            continue;
-                        }
-
-                        if let Ok(chunk) = serde_json::from_str::<openai::StreamChunk>(&data) {
-                            if message_id.is_none() {
-                                if let Some(id) = &chunk.id {
-                                    message_id = Some(id.clone());
+                                Err(e) => {
+                                    let valid_up_to = e.valid_up_to();
+                                    if valid_up_to > 0 {
+                                        let partial = std::str::from_utf8(&raw_buffer[..valid_up_to]).unwrap();
+                                        buffer.push_str(&partial.replace("\r\n", "\n"));
+                                        raw_buffer = raw_buffer[valid_up_to..].to_vec();
+                                    }
+                                    if raw_buffer.is_empty() || valid_up_to == 0 {
+                                        break;
+                                    }
                                 }
                             }
-                            if current_model.is_none() {
-                                if let Some(model) = &chunk.model {
-                                    current_model = Some(model.clone());
-                                }
+                        }
+
+                        while let Some(pos) = buffer.find("\n\n") {
+                            let event_block = buffer[..pos].to_string();
+                            buffer = buffer[pos + 2..].to_string();
+
+                            if event_block.trim().is_empty() {
+                                continue;
                             }
 
-                            if let Some(choice) = chunk.choices.first() {
-                                if !has_sent_message_start {
-                                    let event = anthropic::StreamEvent::MessageStart {
-                                        message: anthropic::MessageStartData {
-                                            id: message_id.clone().unwrap_or_else(generate_message_id),
-                                            message_type: "message".to_string(),
-                                            role: "assistant".to_string(),
-                                            content: vec![],
-                                            model: current_model
-                                                .clone()
-                                                .unwrap_or_else(|| fallback_model.clone()),
-                                            stop_reason: None,
-                                            stop_sequence: None,
-                                            usage: anthropic::Usage {
-                                                input_tokens: 0,
-                                                output_tokens: 0,
-                                            },
+                            let Some(data) = extract_sse_data(&event_block) else {
+                                continue;
+                            };
+
+                            if data.trim() == "[DONE]" {
+                                if let Some(previous) = active_block.take() {
+                                    yield Ok(Bytes::from(stop_block_sse(previous.index())));
+                                }
+                                if has_sent_message_start && !has_sent_message_delta {
+                                    let event = anthropic::StreamEvent::MessageDelta {
+                                        delta: anthropic::MessageDeltaData {
+                                            stop_reason: Some("end_turn".to_string()),
+                                            stop_sequence: (),
                                         },
+                                        usage: None,
                                     };
-                                    yield Ok(Bytes::from(sse_event("message_start", &event)));
-                                    has_sent_message_start = true;
+                                    yield Ok(Bytes::from(sse_event("message_delta", &event)));
+                                    has_sent_message_delta = true;
                                 }
+                                if has_sent_message_start && !has_sent_message_stop {
+                                    yield Ok(Bytes::from(message_stop_sse()));
+                                    has_sent_message_stop = true;
+                                }
+                                continue;
+                            }
 
-                                if let Some(reasoning) = &choice.delta.reasoning {
-                                    if !reasoning.is_empty() {
-                                        if !profile.supports_reasoning() && compat_mode.is_strict() {
-                                            yield Ok(Bytes::from(stream_error_sse(
-                                                "reasoning deltas are not supported by the active backend profile",
-                                            )));
-                                            break;
-                                        }
-
-                                        if profile.supports_reasoning() {
-                                            let (idx, transitions) = transition_to_thinking(
-                                                &mut active_block,
-                                                &mut next_content_index,
-                                            );
-                                            for event in transitions {
-                                                yield Ok(Bytes::from(event));
-                                            }
-                                            yield Ok(Bytes::from(delta_block_sse(
-                                                idx,
-                                                anthropic::ContentBlockDeltaData::ThinkingDelta {
-                                                    thinking: reasoning.clone(),
-                                                },
-                                            )));
-                                        }
+                            if let Ok(chunk) = serde_json::from_str::<openai::StreamChunk>(&data) {
+                                if message_id.is_none() {
+                                    if let Some(id) = &chunk.id {
+                                        message_id = Some(id.clone());
+                                    }
+                                }
+                                if current_model.is_none() {
+                                    if let Some(model) = &chunk.model {
+                                        current_model = Some(model.clone());
                                     }
                                 }
 
-                                if let Some(content) = &choice.delta.content {
-                                    if !content.is_empty() {
-                                        let (embedded_reasoning, visible_text) = think_filter.push(content);
+                                if let Some(choice) = chunk.choices.first() {
+                                    if !has_sent_message_start {
+                                        let event = anthropic::StreamEvent::MessageStart {
+                                            message: anthropic::MessageStartData {
+                                                id: message_id.clone().unwrap_or_else(generate_message_id),
+                                                message_type: "message".to_string(),
+                                                role: "assistant".to_string(),
+                                                content: vec![],
+                                                model: current_model
+                                                    .clone()
+                                                    .unwrap_or_else(|| fallback_model.clone()),
+                                                stop_reason: None,
+                                                stop_sequence: None,
+                                                usage: anthropic::Usage {
+                                                    input_tokens: 0,
+                                                    output_tokens: 0,
+                                                },
+                                            },
+                                        };
+                                        yield Ok(Bytes::from(sse_event("message_start", &event)));
+                                        has_sent_message_start = true;
+                                    }
 
-                                        if profile.supports_reasoning() {
-                                            for reasoning in embedded_reasoning {
+                                    if let Some(reasoning) = &choice.delta.reasoning {
+                                        if !reasoning.is_empty() {
+                                            if !profile.supports_reasoning() && compat_mode.is_strict() {
+                                                yield Ok(Bytes::from(stream_error_sse(
+                                                    "reasoning deltas are not supported by the active backend profile",
+                                                )));
+                                                break;
+                                            }
+
+                                            if profile.supports_reasoning() {
                                                 let (idx, transitions) = transition_to_thinking(
                                                     &mut active_block,
                                                     &mut next_content_index,
@@ -407,113 +480,143 @@ fn create_sse_stream(
                                                 yield Ok(Bytes::from(delta_block_sse(
                                                     idx,
                                                     anthropic::ContentBlockDeltaData::ThinkingDelta {
-                                                        thinking: reasoning,
+                                                        thinking: reasoning.clone(),
                                                     },
                                                 )));
                                             }
                                         }
-
-                                        if !visible_text.is_empty() {
-                                            let (idx, transitions) = transition_to_text(
-                                                &mut active_block,
-                                                &mut next_content_index,
-                                            );
-                                            for event in transitions {
-                                                yield Ok(Bytes::from(event));
-                                            }
-                                            yield Ok(Bytes::from(delta_block_sse(
-                                                idx,
-                                                anthropic::ContentBlockDeltaData::TextDelta {
-                                                    text: visible_text,
-                                                },
-                                            )));
-                                        }
                                     }
-                                }
 
-                                if let Some(tool_calls) = &choice.delta.tool_calls {
-                                    for tool_call in tool_calls {
-                                        let tool_index = tool_call.index.unwrap_or(0);
-                                        let state = tool_states.entry(tool_index).or_default();
+                                    if let Some(content) = &choice.delta.content {
+                                        if !content.is_empty() {
+                                            let (embedded_reasoning, visible_text) = think_filter.push(content);
 
-                                        if let Some(id) = &tool_call.id {
-                                            state.id = Some(id.clone());
-                                        }
-                                        if let Some(function) = &tool_call.function {
-                                            if let Some(name) = &function.name {
-                                                state.name = Some(name.clone());
-                                            }
-                                        }
-
-                                        if state.content_index.is_none() {
-                                            if let (Some(id), Some(name)) = (state.id.clone(), state.name.clone()) {
-                                                let (idx, transitions) = transition_to_tool(
-                                                    &mut active_block,
-                                                    &mut next_content_index,
-                                                    tool_index,
-                                                    id,
-                                                    name,
-                                                );
-                                                state.content_index = Some(idx);
-                                                for event in transitions {
-                                                    yield Ok(Bytes::from(event));
-                                                }
-                                            }
-                                        } else if active_block != Some(ActiveBlock::ToolUse(tool_index, state.content_index.unwrap())) {
-                                            if !compat_mode.is_strict() {
-                                                continue;
-                                            }
-                                            yield Ok(Bytes::from(stream_error_sse(
-                                                "interleaved tool call deltas are not supported safely",
-                                            )));
-                                            break;
-                                        }
-
-                                        if let Some(function) = &tool_call.function {
-                                            if let Some(arguments) = &function.arguments {
-                                                if let Some(idx) = state.content_index {
+                                            if profile.supports_reasoning() {
+                                                for reasoning in embedded_reasoning {
+                                                    let (idx, transitions) = transition_to_thinking(
+                                                        &mut active_block,
+                                                        &mut next_content_index,
+                                                    );
+                                                    for event in transitions {
+                                                        yield Ok(Bytes::from(event));
+                                                    }
                                                     yield Ok(Bytes::from(delta_block_sse(
                                                         idx,
-                                                        anthropic::ContentBlockDeltaData::InputJsonDelta {
-                                                            partial_json: arguments.clone(),
+                                                        anthropic::ContentBlockDeltaData::ThinkingDelta {
+                                                            thinking: reasoning,
                                                         },
                                                     )));
                                                 }
                                             }
+
+                                            if !visible_text.is_empty() {
+                                                let (idx, transitions) = transition_to_text(
+                                                    &mut active_block,
+                                                    &mut next_content_index,
+                                                );
+                                                for event in transitions {
+                                                    yield Ok(Bytes::from(event));
+                                                }
+                                                yield Ok(Bytes::from(delta_block_sse(
+                                                    idx,
+                                                    anthropic::ContentBlockDeltaData::TextDelta {
+                                                        text: visible_text,
+                                                    },
+                                                )));
+                                            }
                                         }
                                     }
-                                }
 
-                                if let Some(finish_reason) = &choice.finish_reason {
-                                    if let Some(previous) = active_block.take() {
-                                        yield Ok(Bytes::from(stop_block_sse(previous.index())));
+                                    if let Some(tool_calls) = &choice.delta.tool_calls {
+                                        for tool_call in tool_calls {
+                                            let tool_index = tool_call.index.unwrap_or(0);
+                                            let state = tool_states.entry(tool_index).or_default();
+
+                                            if let Some(id) = &tool_call.id {
+                                                state.id = Some(id.clone());
+                                            }
+                                            if let Some(function) = &tool_call.function {
+                                                if let Some(name) = &function.name {
+                                                    state.name = Some(name.clone());
+                                                }
+                                            }
+
+                                            if state.content_index.is_none() {
+                                                if let (Some(id), Some(name)) = (state.id.clone(), state.name.clone()) {
+                                                    let (idx, transitions) = transition_to_tool(
+                                                        &mut active_block,
+                                                        &mut next_content_index,
+                                                        tool_index,
+                                                        id,
+                                                        name,
+                                                    );
+                                                    state.content_index = Some(idx);
+                                                    for event in transitions {
+                                                        yield Ok(Bytes::from(event));
+                                                    }
+                                                }
+                                            } else if active_block != Some(ActiveBlock::ToolUse(tool_index, state.content_index.unwrap())) {
+                                                if !compat_mode.is_strict() {
+                                                    continue;
+                                                }
+                                                yield Ok(Bytes::from(stream_error_sse(
+                                                    "interleaved tool call deltas are not supported safely",
+                                                )));
+                                                break;
+                                            }
+
+                                            if let Some(function) = &tool_call.function {
+                                                if let Some(arguments) = &function.arguments {
+                                                    if let Some(idx) = state.content_index {
+                                                        yield Ok(Bytes::from(delta_block_sse(
+                                                            idx,
+                                                            anthropic::ContentBlockDeltaData::InputJsonDelta {
+                                                                partial_json: arguments.clone(),
+                                                            },
+                                                        )));
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
 
-                                    let event = anthropic::StreamEvent::MessageDelta {
-                                        delta: anthropic::MessageDeltaData {
-                                            stop_reason: transform::map_stop_reason(Some(finish_reason)),
-                                            stop_sequence: (),
-                                        },
-                                        usage: chunk.usage.as_ref().and_then(|u| {
-                                            u.completion_tokens.map(|tokens| anthropic::MessageDeltaUsage {
-                                                output_tokens: tokens,
-                                            })
-                                        }),
-                                    };
-                                    yield Ok(Bytes::from(sse_event("message_delta", &event)));
-                                    has_sent_message_delta = true;
-                                    if !has_sent_message_stop {
-                                        yield Ok(Bytes::from(message_stop_sse()));
-                                        has_sent_message_stop = true;
+                                    if let Some(finish_reason) = &choice.finish_reason {
+                                        if let Some(previous) = active_block.take() {
+                                            yield Ok(Bytes::from(stop_block_sse(previous.index())));
+                                        }
+
+                                        let event = anthropic::StreamEvent::MessageDelta {
+                                            delta: anthropic::MessageDeltaData {
+                                                stop_reason: transform::map_stop_reason(Some(finish_reason)),
+                                                stop_sequence: (),
+                                            },
+                                            usage: chunk.usage.as_ref().and_then(|u| {
+                                                u.completion_tokens.map(|tokens| anthropic::MessageDeltaUsage {
+                                                    output_tokens: tokens,
+                                                })
+                                            }),
+                                        };
+                                        yield Ok(Bytes::from(sse_event("message_delta", &event)));
+                                        has_sent_message_delta = true;
+                                        if !has_sent_message_stop {
+                                            yield Ok(Bytes::from(message_stop_sse()));
+                                            has_sent_message_stop = true;
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-                Err(e) => {
-                    tracing::error!("Stream error: {}", e);
-                    yield Ok(Bytes::from(stream_error_sse(&format!("Stream error: {}", e))));
+                    Err(e) => {
+                        tracing::error!("Stream error: {}", e);
+                        yield Ok(Bytes::from(stream_error_sse(&format!("Stream error: {}", e))));
+                        break;
+                    }
+                },
+                Ok(None) => break,
+                Err(_) => {
+                    tracing::warn!("Stream chunk timeout ({}s), closing stream", chunk_timeout_secs);
+                    yield Ok(Bytes::from(stream_error_sse("stream chunk timeout")));
                     break;
                 }
             }
@@ -568,11 +671,12 @@ pub struct Config {
     pub compat_mode: CompatMode,
     pub primary_model: String,
     pub reasoning_model: Option<String>,
-    pub fallback_models: Vec<String>,
     pub api_key: Option<String>,
     pub ingress_api_key: Option<String>,
     pub allow_origins: Vec<String>,
     pub port: u16,
+    pub rate_limit_per_minute: Option<u32>,
+    pub stream_chunk_timeout_secs: u64,
 }
 
 impl Config {
@@ -590,19 +694,6 @@ impl Config {
                 })
             })
             .unwrap_or_else(|| "Qwen/Qwen3.5-397B-A17B-TEE".to_string());
-        let fallback_models = std::env::var("ANTHMORPH_FALLBACK_MODELS")
-            .ok()
-            .or_else(|| legacy_model.clone())
-            .map(|value| {
-                value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .filter(|s| *s != primary_model)
-                    .map(ToOwned::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
 
         Self {
             backend_url: std::env::var("ANTHMORPH_BACKEND_URL")
@@ -617,7 +708,6 @@ impl Config {
                 .unwrap_or(CompatMode::Compat),
             primary_model,
             reasoning_model: std::env::var("ANTHMORPH_REASONING_MODEL").ok(),
-            fallback_models,
             api_key: std::env::var("ANTHMORPH_API_KEY").ok(),
             ingress_api_key: std::env::var("ANTHMORPH_INGRESS_API_KEY").ok(),
             allow_origins: std::env::var("ANTHMORPH_ALLOWED_ORIGINS")
@@ -634,6 +724,13 @@ impl Config {
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .unwrap_or(3000),
+            rate_limit_per_minute: std::env::var("ANTHMORPH_RATE_LIMIT_PER_MINUTE")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            stream_chunk_timeout_secs: std::env::var("ANTHMORPH_STREAM_CHUNK_TIMEOUT_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
         }
     }
 
@@ -657,11 +754,12 @@ impl fmt::Debug for Config {
             .field("compat_mode", &self.compat_mode.as_str())
             .field("primary_model", &self.primary_model)
             .field("reasoning_model", &self.reasoning_model)
-            .field("fallback_models", &self.fallback_models)
             .field("api_key", &"<hidden>")
             .field("ingress_api_key", &"<hidden>")
             .field("allow_origins", &self.allow_origins)
             .field("port", &self.port)
+            .field("rate_limit_per_minute", &self.rate_limit_per_minute)
+            .field("stream_chunk_timeout_secs", &self.stream_chunk_timeout_secs)
             .finish()
     }
 }
@@ -927,6 +1025,14 @@ pub fn build_cors_layer(config: &Config) -> anyhow::Result<Option<CorsLayer>> {
         return Ok(None);
     }
 
+    for origin in &config.allow_origins {
+        if origin.contains('*') {
+            anyhow::bail!(
+                "wildcard origin '*' is not supported in ANTHMORPH_ALLOWED_ORIGINS; use a reverse proxy for open CORS"
+            );
+        }
+    }
+
     let origins: Vec<HeaderValue> = config
         .allow_origins
         .iter()
@@ -1012,6 +1118,7 @@ mod tests {
             "fallback".to_string(),
             BackendProfile::Chutes,
             CompatMode::Strict,
+            30,
         );
         tokio::pin!(sse);
 
@@ -1056,6 +1163,7 @@ mod tests {
             "fallback".to_string(),
             BackendProfile::OpenaiGeneric,
             CompatMode::Compat,
+            30,
         );
         tokio::pin!(sse);
 
@@ -1137,11 +1245,12 @@ mod tests {
             compat_mode: CompatMode::Strict,
             primary_model: "model".to_string(),
             reasoning_model: None,
-            fallback_models: Vec::new(),
             api_key: None,
             ingress_api_key: Some("secret".to_string()),
             allow_origins: Vec::new(),
             port: 3000,
+            rate_limit_per_minute: None,
+            stream_chunk_timeout_secs: 30,
         };
 
         let mut bearer_headers = HeaderMap::new();
@@ -1167,11 +1276,12 @@ mod tests {
             compat_mode: CompatMode::Strict,
             primary_model: "model".to_string(),
             reasoning_model: None,
-            fallback_models: Vec::new(),
             api_key: None,
             ingress_api_key: Some("secret".to_string()),
             allow_origins: Vec::new(),
             port: 3000,
+            rate_limit_per_minute: None,
+            stream_chunk_timeout_secs: 30,
         };
 
         let headers = HeaderMap::new();
@@ -1187,11 +1297,12 @@ mod tests {
             compat_mode: CompatMode::Strict,
             primary_model: "model".to_string(),
             reasoning_model: None,
-            fallback_models: Vec::new(),
             api_key: None,
             ingress_api_key: None,
             allow_origins: vec!["https://allowed.example".to_string()],
             port: 3000,
+            rate_limit_per_minute: None,
+            stream_chunk_timeout_secs: 30,
         };
 
         let app = Router::new().route("/health", get(|| async { StatusCode::OK }));
@@ -1215,5 +1326,55 @@ mod tests {
             response.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
             Some(&HeaderValue::from_static("https://allowed.example"))
         );
+    }
+
+    #[test]
+    fn redact_secrets_hides_bearer_tokens() {
+        let input = r#"{"error":"Bearer sk-ant-api03-longtoken1234567890abcdef is invalid"}"#;
+        let redacted = redact_secrets(input);
+        assert!(!redacted.contains("sk-ant-api03-longtoken1234567890abcdef"));
+        assert!(redacted.contains("Bearer ***"));
+    }
+
+    #[test]
+    fn redact_secrets_hides_cpk_prefix() {
+        let input = r#"error for cpk_1234567890abcdef1234"#;
+        let redacted = redact_secrets(input);
+        assert!(!redacted.contains("cpk_1234567890abcdef1234"));
+        assert!(redacted.contains("***"));
+    }
+
+    #[test]
+    fn redact_secrets_preserves_clean_text() {
+        let input = r#"{"error":"model not found"}"#;
+        assert_eq!(redact_secrets(input), input);
+    }
+
+    #[test]
+    fn redact_secrets_truncates_long_input() {
+        let input = "x".repeat(3000);
+        let redacted = redact_secrets(&input);
+        assert!(redacted.len() <= 2070);
+        assert!(redacted.ends_with("… [truncated]"));
+    }
+
+    #[test]
+    fn build_cors_layer_rejects_wildcard() {
+        let config = Config {
+            backend_url: "https://example.com".to_string(),
+            backend_profile: BackendProfile::OpenaiGeneric,
+            compat_mode: CompatMode::Strict,
+            primary_model: "model".to_string(),
+            reasoning_model: None,
+            api_key: None,
+            ingress_api_key: None,
+            allow_origins: vec!["*".to_string()],
+            port: 3000,
+            rate_limit_per_minute: None,
+            stream_chunk_timeout_secs: 30,
+        };
+        let result = build_cors_layer(&config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("wildcard"));
     }
 }

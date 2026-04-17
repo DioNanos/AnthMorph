@@ -462,7 +462,18 @@ pub fn openai_to_anthropic(
     if let Some(tool_calls) = &choice.message.tool_calls {
         for tool_call in tool_calls {
             let input: Value =
-                serde_json::from_str(&tool_call.function.arguments).unwrap_or_else(|_| json!({}));
+                match serde_json::from_str(&tool_call.function.arguments) {
+                    Ok(v) => v,
+                    Err(err) => {
+                        tracing::warn!(
+                            tool_id = %tool_call.id,
+                            tool_name = %tool_call.function.name,
+                            error = %err,
+                            "tool_call.arguments is not valid JSON, forwarding as empty object"
+                        );
+                        json!({})
+                    }
+                };
 
             content.push(anthropic::ResponseContent::ToolUse {
                 id: tool_call.id.clone(),
@@ -472,16 +483,7 @@ pub fn openai_to_anthropic(
         }
     }
 
-    let stop_reason = choice
-        .finish_reason
-        .as_ref()
-        .map(|r| match r.as_str() {
-            "tool_calls" => "tool_use",
-            "stop" => "end_turn",
-            "length" => "max_tokens",
-            _ => "end_turn",
-        })
-        .map(String::from);
+    let stop_reason = map_stop_reason(choice.finish_reason.as_deref());
 
     Ok(anthropic::AnthropicResponse {
         id: resp.id.unwrap_or_else(generate_message_id),
@@ -778,5 +780,57 @@ mod tests {
             anthropic::ResponseContent::Text { text } => assert_eq!(text, "visible answer"),
             other => panic!("expected visible text only, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn malformed_tool_call_arguments_falls_back_to_empty_object() {
+        let resp = openai::OpenAIResponse {
+            id: Some("id1".to_string()),
+            model: Some("backend".to_string()),
+            choices: vec![openai::Choice {
+                message: openai::ChoiceMessage {
+                    content: None,
+                    tool_calls: Some(vec![openai::ToolCall {
+                        id: "call_1".to_string(),
+                        call_type: "function".to_string(),
+                        function: openai::FunctionCall {
+                            name: "weather".to_string(),
+                            arguments: "{ invalid json".to_string(),
+                        },
+                    }]),
+                    reasoning_content: None,
+                },
+                finish_reason: Some("tool_calls".to_string()),
+            }],
+            usage: openai::Usage {
+                prompt_tokens: 5,
+                completion_tokens: 3,
+            },
+        };
+
+        let out = openai_to_anthropic(
+            resp,
+            "fallback",
+            BackendProfile::Chutes,
+            CompatMode::Strict,
+        )
+        .unwrap();
+
+        match &out.content[0] {
+            anthropic::ResponseContent::ToolUse { input, .. } => {
+                assert_eq!(input, &json!({}));
+            }
+            other => panic!("expected tool_use block, got {other:?}"),
+        }
+        assert_eq!(out.stop_reason.as_deref(), Some("tool_use"));
+    }
+
+    #[test]
+    fn map_stop_reason_covers_all_cases() {
+        assert_eq!(map_stop_reason(Some("tool_calls")), Some("tool_use".to_string()));
+        assert_eq!(map_stop_reason(Some("stop")), Some("end_turn".to_string()));
+        assert_eq!(map_stop_reason(Some("length")), Some("max_tokens".to_string()));
+        assert_eq!(map_stop_reason(Some("content_filter")), Some("end_turn".to_string()));
+        assert_eq!(map_stop_reason(None), None);
     }
 }
