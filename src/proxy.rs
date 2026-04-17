@@ -25,6 +25,8 @@ fn redact_secrets(input: &str) -> String {
     let mut result = input.to_string();
     result = redact_pattern(&result, "Bearer ", 8);
     result = redact_pattern(&result, "bearer ", 8);
+    result = redact_pattern(&result, "x-api-key: ", 8);
+    result = redact_pattern(&result, "x-api-key=", 8);
     for prefix in &["sk-", "sk_", "cpk_"] {
         result = redact_pattern(&result, prefix, 20);
     }
@@ -37,17 +39,11 @@ fn redact_secrets(input: &str) -> String {
 
 fn redact_pattern(input: &str, prefix: &str, min_token_len: usize) -> String {
     let mut result = input.to_string();
-    let prefix_lower = prefix.to_lowercase();
     let search_from_pos = |s: &str, start: usize, needle: &str| -> Option<usize> {
         s[start..].find(needle).map(|p| start + p)
     };
     let mut offset = 0;
-    let needle = if prefix == prefix_lower {
-        prefix
-    } else {
-        prefix
-    };
-    while let Some(pos) = search_from_pos(&result, offset, needle) {
+    while let Some(pos) = search_from_pos(&result, offset, prefix) {
         let token_start = pos + prefix.len();
         let token_end = result[token_start..]
             .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '}' || c == ',')
@@ -1356,6 +1352,23 @@ mod tests {
         let redacted = redact_secrets(&input);
         assert!(redacted.len() <= 2070);
         assert!(redacted.ends_with("… [truncated]"));
+    }
+
+    #[test]
+    fn redact_secrets_hides_x_api_key() {
+        let input = "upstream rejected: x-api-key: cpk_abcdef1234567890 is invalid";
+        let redacted = redact_secrets(input);
+        assert!(!redacted.contains("cpk_abcdef1234567890"));
+        assert!(redacted.contains("x-api-key: ***"));
+    }
+
+    #[test]
+    fn rate_limit_error_returns_429_format() {
+        use crate::error::ProxyError;
+        use axum::response::IntoResponse;
+        let err = ProxyError::Upstream("429 rate limit exceeded".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 
     #[test]

@@ -19,7 +19,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[command(name = "anthmorph")]
 #[command(about = "Anthropic to OpenAI-compatible proxy")]
 struct Cli {
-    #[arg(long, default_value = "3000")]
+    #[arg(long)]
     port: Option<u16>,
     #[arg(long)]
     backend_url: Option<String>,
@@ -132,6 +132,21 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // Rate limiter bucket cleanup every hour
+    if let Some(limiter) = rate_limiter.clone() {
+        let mut shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(3600)) => {
+                        limiter.cleanup(3600).await;
+                    }
+                    _ = shutdown.changed() => { break; }
+                }
+            }
+        });
+    }
+
     let app = Router::new()
         .route("/v1/messages", post(proxy::proxy_handler))
         .route(
@@ -160,7 +175,19 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
-            tokio::signal::ctrl_c().await.ok();
+            #[cfg(unix)]
+            let sigterm = async {
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                    .expect("failed to install SIGTERM handler")
+                    .recv()
+                    .await;
+            };
+            #[cfg(not(unix))]
+            let sigterm = std::future::pending::<()>();
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm => {}
+            }
             tracing::info!("Shutdown signal received");
             let _ = shutdown_tx.send(true);
         })

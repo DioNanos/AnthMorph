@@ -1,6 +1,6 @@
 # AnthMorph
 
-[![Status](https://img.shields.io/badge/Status-0.1.4-blue.svg)](#project-status)
+[![Status](https://img.shields.io/badge/Status-0.1.5-blue.svg)](#project-status)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![Target](https://img.shields.io/badge/Target-Termux%20%2F%20Linux-green.svg)](https://termux.dev)
@@ -11,7 +11,7 @@ It lets Claude-style clients talk to Chutes or other OpenAI-compatible backends 
 
 ## Project Status
 
-- Current line: `0.1.4`
+- Current line: `0.1.5`
 - Primary target: `chutes.ai`
 - Secondary target: generic OpenAI-compatible endpoints
 - Release model: MIT-licensed GitHub repo plus public npm package
@@ -71,10 +71,10 @@ anthmorphctl stop
 
 ## Docs
 
-- Claude Code setup: [docs/CLAUDE_CODE_SETUP.md](/home/dag/Dev/AnthMorph/docs/CLAUDE_CODE_SETUP.md)
-- Packaging details: [docs/PACKAGING.md](/home/dag/Dev/AnthMorph/docs/PACKAGING.md)
-- Release guide: [docs/RELEASE.md](/home/dag/Dev/AnthMorph/docs/RELEASE.md)
-- Changelog: [CHANGELOG.md](/home/dag/Dev/AnthMorph/CHANGELOG.md)
+- Claude Code setup: [docs/CLAUDE_CODE_SETUP.md](docs/CLAUDE_CODE_SETUP.md)
+- Packaging details: [docs/PACKAGING.md](docs/PACKAGING.md)
+- Release guide: [docs/RELEASE.md](docs/RELEASE.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Packaging Notes
 
@@ -82,6 +82,42 @@ anthmorphctl stop
 - Linux and macOS build from source during install
 - Docker is the supported reproducible release path on VPS3 and similar hosts
 - If Cargo is unavailable on Linux/macOS, use the Docker build path documented in `docs/PACKAGING.md`
+
+## Service Install
+
+For local operator use, build and run AnthMorph through `anthmorphctl`:
+
+```bash
+cargo build --release
+anthmorphctl init chutes --port 3107 --compat-mode compat
+anthmorphctl start
+```
+
+`anthmorphctl` now exports runtime configuration through environment variables before launch, so backend secrets do not appear in process arguments.
+
+For a persistent user service on Linux:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cat > ~/.config/systemd/user/anthmorph.service <<'EOF'
+[Unit]
+Description=AnthMorph proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/AnthMorph
+ExecStart=/path/to/AnthMorph/scripts/anthmorph-service-run
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+systemctl --user daemon-reload
+systemctl --user enable --now anthmorph.service
+```
 
 ## Validation
 

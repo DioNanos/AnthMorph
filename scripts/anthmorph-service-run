@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_PATH=$(readlink -f -- "$0" 2>/dev/null || printf "%s" "$0")
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
+STATE_DIR=${ANTHMORPH_STATE_DIR:-$ROOT_DIR/.anthmorph}
+CONFIG_FILE=$STATE_DIR/config.env
+PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
+BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "missing config: run 'anthmorphctl init ...' first" >&2
+  exit 1
+fi
+
+# shellcheck disable=SC1090
+. "$CONFIG_FILE"
+
+BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
+
+if [ -n "${API_KEY:-}" ]; then
+  resolved_api_key=$API_KEY
+elif [ -n "${API_KEY_ENV:-}" ]; then
+  eval "resolved_api_key=\${$API_KEY_ENV-}"
+else
+  resolved_api_key=
+fi
+
+if [ -z "${resolved_api_key:-}" ]; then
+  echo "missing API key: configure API_KEY_ENV or save an API key" >&2
+  exit 1
+fi
+
+export PORT=${PORT:-3000}
+export ANTHMORPH_BACKEND_PROFILE=${BACKEND_PROFILE:-}
+export ANTHMORPH_COMPAT_MODE=${COMPAT_MODE:-strict}
+export ANTHMORPH_BACKEND_URL=${BACKEND_URL:-}
+export ANTHMORPH_PRIMARY_MODEL=${PRIMARY_MODEL:-}
+export ANTHMORPH_API_KEY=$resolved_api_key
+
+if [ -n "${REASONING_MODEL:-}" ]; then
+  export ANTHMORPH_REASONING_MODEL=$REASONING_MODEL
+fi
+
+if [ -n "${INGRESS_API_KEY:-}" ]; then
+  export ANTHMORPH_INGRESS_API_KEY=$INGRESS_API_KEY
+fi
+
+if [ -n "${ALLOWED_ORIGINS:-}" ]; then
+  export ANTHMORPH_ALLOWED_ORIGINS=$ALLOWED_ORIGINS
+fi
+
+exec "$BIN_PATH"

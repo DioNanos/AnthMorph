@@ -445,13 +445,11 @@ pub fn openai_to_anthropic(
         }
     }
 
-    if choice.message.reasoning_content.is_none() && !embedded_reasoning.is_empty() {
-        if profile.supports_reasoning() {
-            for reasoning in embedded_reasoning {
-                content.push(anthropic::ResponseContent::Thinking {
-                    thinking: reasoning,
-                });
-            }
+    if choice.message.reasoning_content.is_none() && !embedded_reasoning.is_empty() && profile.supports_reasoning() {
+        for reasoning in embedded_reasoning {
+            content.push(anthropic::ResponseContent::Thinking {
+                thinking: reasoning,
+            });
         }
     }
 

@@ -25,9 +25,7 @@ impl axum::response::IntoResponse for ProxyError {
         let (status, error_type) = match &self {
             ProxyError::Http(_) => (StatusCode::BAD_GATEWAY, "api_error"),
             ProxyError::Upstream(msg) => {
-                if msg.contains("unauthorized ingress") {
-                    (StatusCode::UNAUTHORIZED, "authentication_error")
-                } else if msg.contains("401") || msg.contains("403") {
+                if msg.contains("unauthorized ingress") || msg.contains("401") || msg.contains("403") {
                     (StatusCode::UNAUTHORIZED, "authentication_error")
                 } else if msg.contains("429") {
                     (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error")

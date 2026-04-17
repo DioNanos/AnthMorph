@@ -47,7 +47,6 @@ impl RateLimiter {
         }
     }
 
-    #[allow(dead_code)]
     pub async fn cleanup(&self, max_age_secs: u64) {
         let mut state = self.state.lock().await;
         let now = Instant::now();

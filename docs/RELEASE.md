@@ -4,9 +4,9 @@ This guide prepares AnthMorph for GitHub push/release and npm publish without em
 
 ## Preconditions
 
-- git identity uses `DioNanos <noreply@github.com>`
+- release auth for GitHub and npm is already configured on the release machine
+- git remotes are configured with `origin` = GitHub and `develop` = VPS3 bare repo
 - npm login is already configured externally
-- release auth for GitHub and npm is available in the shell, not in repo files
 - Docker is available on the release machine
 
 ## Release verification
@@ -43,29 +43,31 @@ Or step by step:
 ```bash
 git status
 git add .
-git commit -m "Release v0.1.4"
-git tag -a v0.1.4 -m "Release v0.1.4"
+git commit -m "Release v0.1.5"
+git tag -a v0.1.5 -m "Release v0.1.5"
 git push origin main
-git push origin v0.1.4
+git push origin v0.1.5
+git push develop main
+git push develop v0.1.5
 ```
 
 ## GitHub release notes
 
-Use the `0.1.4` section from `CHANGELOG.md` as the release body.
+Use the `0.1.5` section from `CHANGELOG.md` as the release body.
 
 If `gh` is installed:
 
 ```bash
 awk '
-  /^## 0.1.4$/ {capture=1; next}
+  /^## 0.1.5$/ {capture=1; next}
   /^## / && capture {exit}
   capture {print}
-' CHANGELOG.md > /tmp/anthmorph-v0.1.4-notes.md
+' CHANGELOG.md > /tmp/anthmorph-v0.1.5-notes.md
 
-gh release create v0.1.4 --title "v0.1.4" --notes-file /tmp/anthmorph-v0.1.4-notes.md
+gh release create v0.1.5 --title "v0.1.5" --notes-file /tmp/anthmorph-v0.1.5-notes.md
 ```
 
-If `gh` is not installed, create the release in the GitHub web UI from tag `v0.1.4`.
+If `gh` is not installed, create the release in the GitHub web UI from tag `v0.1.5`.
 
 ## npm publish
 

@@ -1,9 +1,9 @@
 {
   "name": "@mmmbuto/anthmorph",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Chutes-first Anthropic /v1/messages proxy for Chutes and OpenAI-compatible backends",
   "license": "MIT",
-  "author": "DioNanos <noreply@github.com>",
+  "author": "Davide A. Guglielmi",
   "bin": {
     "anthmorph": "bin/anthmorph",
     "anthmorphctl": "scripts/anthmorphctl"
@@ -12,6 +12,7 @@
     "bin/",
     "prebuilt/",
     "scripts/anthmorphctl",
+    "scripts/anthmorph-service-run",
     "scripts/docker_build_linux.sh",
     "scripts/docker_npm_dry_run.sh",
     "scripts/docker_release_checks.sh",
@@ -20,7 +21,9 @@
     "scripts/postinstall.js",
     "scripts/test_claude_code_patterns_real.sh",
     "src/",
-    "docs/",
+    "docs/CLAUDE_CODE_SETUP.md",
+    "docs/PACKAGING.md",
+    "docs/RELEASE.md",
     "Cargo.toml",
     "Cargo.lock",
     "CHANGELOG.md",

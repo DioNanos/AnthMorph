@@ -459,30 +459,32 @@ start_cmd() {
     exit 1
   fi
 
-  set -- "$BIN_PATH" \
-    --port "$PORT" \
-    --backend-profile "$BACKEND_PROFILE" \
-    --compat-mode "${COMPAT_MODE:-strict}" \
-    --backend-url "$BACKEND_URL" \
-    --model "$PRIMARY_MODEL" \
-    --api-key "$api_key"
+  export PORT
+  export ANTHMORPH_BACKEND_PROFILE=$BACKEND_PROFILE
+  export ANTHMORPH_COMPAT_MODE=${COMPAT_MODE:-strict}
+  export ANTHMORPH_BACKEND_URL=$BACKEND_URL
+  export ANTHMORPH_PRIMARY_MODEL=$PRIMARY_MODEL
+  export ANTHMORPH_API_KEY=$api_key
 
   if [ -n "${REASONING_MODEL:-}" ]; then
-    set -- "$@" --reasoning-model "$REASONING_MODEL"
+    export ANTHMORPH_REASONING_MODEL=$REASONING_MODEL
+  else
+    unset ANTHMORPH_REASONING_MODEL 2>/dev/null || true
   fi
+
   if [ -n "${INGRESS_API_KEY:-}" ]; then
-    set -- "$@" --ingress-api-key "$INGRESS_API_KEY"
+    export ANTHMORPH_INGRESS_API_KEY=$INGRESS_API_KEY
+  else
+    unset ANTHMORPH_INGRESS_API_KEY 2>/dev/null || true
   fi
 
-  old_ifs=${IFS:- }
-  IFS=,
-  for origin in ${ALLOWED_ORIGINS:-}; do
-    [ -n "$origin" ] || continue
-    set -- "$@" --allow-origin "$origin"
-  done
-  IFS=$old_ifs
+  if [ -n "${ALLOWED_ORIGINS:-}" ]; then
+    export ANTHMORPH_ALLOWED_ORIGINS=$ALLOWED_ORIGINS
+  else
+    unset ANTHMORPH_ALLOWED_ORIGINS 2>/dev/null || true
+  fi
 
-  nohup "$@" >>"$LOG_FILE" 2>&1 &
+  nohup "$BIN_PATH" >>"$LOG_FILE" 2>&1 &
   pid=$!
   echo "$pid" > "$PID_FILE"
   sleep 1

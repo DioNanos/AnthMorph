@@ -63,7 +63,7 @@ impl<'de> Deserialize<'de> for SystemPrompt {
             serde_json::Value::Array(arr) => {
                 let messages: Vec<SystemMessage> =
                     serde_json::from_value(serde_json::Value::Array(arr))
-                        .map_err(|e| serde::de::Error::custom(e))?;
+                        .map_err(serde::de::Error::custom)?;
                 Ok(SystemPrompt::Multiple(messages))
             }
             serde_json::Value::Object(obj) => {
@@ -73,7 +73,7 @@ impl<'de> Deserialize<'de> for SystemPrompt {
                 } else if let Some(arr) = obj.get("Multiple").and_then(|v| v.as_array()) {
                     let messages: Vec<SystemMessage> =
                         serde_json::from_value(serde_json::Value::Array(arr.clone()))
-                            .map_err(|e| serde::de::Error::custom(e))?;
+                            .map_err(serde::de::Error::custom)?;
                     Ok(SystemPrompt::Multiple(messages))
                 } else {
                     Err(serde::de::Error::custom("expected Single or Multiple"))
@@ -296,6 +296,7 @@ pub enum ContentBlockStartData {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[allow(clippy::enum_variant_names)]
 pub enum ContentBlockDeltaData {
     TextDelta { text: String },
     ThinkingDelta { thinking: String },

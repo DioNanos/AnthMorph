@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.1.5
+
+- removed local-path references and tightened public release docs
+- hardened `anthmorphctl start` to pass secrets via environment instead of process arguments
+- narrowed npm package contents to the public docs surface and excluded internal release planning notes
+- refreshed GitHub/npm release metadata for the 0.1.5 publish line
+
 ## 0.1.4
 
 - hardened AnthMorph for public GitHub and npm release flow
