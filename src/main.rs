@@ -18,6 +18,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 #[derive(Parser, Debug)]
 #[command(name = "anthmorph")]
 #[command(about = "Anthropic to OpenAI-compatible proxy")]
+#[command(version)]
 struct Cli {
     #[arg(long)]
     port: Option<u16>,
