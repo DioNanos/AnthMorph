@@ -15,11 +15,12 @@ use bytes::Bytes;
 use futures::stream::{Stream, StreamExt};
 use reqwest::Client;
 use serde_json::json;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::pin;
+use tokio::sync::RwLock;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 fn redact_secrets(input: &str) -> String {
@@ -227,11 +228,50 @@ fn models_response_json(models: &[model_cache::ModelInfo]) -> serde_json::Value 
     })
 }
 
+type SharedReasoningCache = Arc<RwLock<HashMap<String, String>>>;
+
+async fn apply_cached_reasoning_to_messages(
+    messages: &mut [openai::Message],
+    cache: &SharedReasoningCache,
+) {
+    let cache = cache.read().await;
+    for message in messages.iter_mut() {
+        if message.reasoning_content.is_some() {
+            continue;
+        }
+        let Some(tool_calls) = &message.tool_calls else {
+            continue;
+        };
+        if let Some(reasoning) = tool_calls
+            .iter()
+            .filter_map(|call| cache.get(&call.id))
+            .find(|value| !value.is_empty())
+        {
+            message.reasoning_content = Some(reasoning.clone());
+        }
+    }
+}
+
+async fn store_reasoning_for_tool_calls(
+    cache: &SharedReasoningCache,
+    reasoning_content: Option<&str>,
+    tool_calls: &[openai::ToolCall],
+) {
+    let Some(reasoning) = reasoning_content.filter(|value| !value.is_empty()) else {
+        return;
+    };
+    let mut cache = cache.write().await;
+    for call in tool_calls {
+        cache.insert(call.id.clone(), reasoning.to_string());
+    }
+}
+
 pub async fn proxy_handler(
     headers: HeaderMap,
     Extension(config): Extension<Arc<Config>>,
     Extension(client): Extension<Client>,
     Extension(models_cache): Extension<model_cache::Cache>,
+    Extension(reasoning_cache): Extension<SharedReasoningCache>,
     Extension(rate_limiter): Extension<Option<SharedRateLimiter>>,
     Json(req): Json<anthropic::AnthropicRequest>,
 ) -> ProxyResult<Response> {
@@ -277,8 +317,9 @@ pub async fn proxy_handler(
     tracing::debug!("Streaming: {}", is_streaming);
 
     let tool_name_map = anthropic_tool_name_map(&req, config.backend_profile);
+    let wants_thinking = request_has_thinking(&req);
 
-    let model = if request_has_thinking(&req) {
+    let model = if wants_thinking {
         config
             .reasoning_model
             .clone()
@@ -296,15 +337,35 @@ pub async fn proxy_handler(
             config.compat_mode,
             &tool_name_map,
         )?;
+    let mut openai_req = openai_req;
+    if config.backend_profile == BackendProfile::Deepseek {
+        openai_req.thinking = Some(openai::ThinkingConfig {
+            thinking_type: if wants_thinking {
+                "enabled".to_string()
+            } else {
+                "disabled".to_string()
+            },
+        });
+    }
+    apply_cached_reasoning_to_messages(&mut openai_req.messages, &reasoning_cache).await;
     validate_deepseek_request(config.backend_profile, &openai_req)?;
 
     let client_key = extract_client_key(&headers);
     let backend_key = resolve_backend_key(client_key.as_deref(), &config);
 
     if is_streaming {
-        handle_streaming(config, client, openai_req, backend_key, tool_name_map).await
+        handle_streaming(config, client, openai_req, backend_key, tool_name_map, reasoning_cache)
+            .await
     } else {
-        handle_non_streaming(config, client, openai_req, backend_key, tool_name_map).await
+        handle_non_streaming(
+            config,
+            client,
+            openai_req,
+            backend_key,
+            tool_name_map,
+            reasoning_cache,
+        )
+        .await
     }
 }
 
@@ -341,6 +402,7 @@ pub async fn responses_handler(
     Extension(config): Extension<Arc<Config>>,
     Extension(client): Extension<Client>,
     Extension(models_cache): Extension<model_cache::Cache>,
+    Extension(reasoning_cache): Extension<SharedReasoningCache>,
     Extension(rate_limiter): Extension<Option<SharedRateLimiter>>,
     Json(req): Json<responses::ResponsesRequest>,
 ) -> ProxyResult<Response> {
@@ -371,16 +433,33 @@ pub async fn responses_handler(
         config.backend_profile,
         &tool_name_map,
     )?;
+    let mut openai_req = openai_req;
+    apply_cached_reasoning_to_messages(&mut openai_req.messages, &reasoning_cache).await;
     validate_deepseek_request(config.backend_profile, &openai_req)?;
 
     let client_key = extract_client_key(&headers);
     let backend_key = resolve_backend_key(client_key.as_deref(), &config);
 
     if wants_stream {
-        handle_responses_streaming(config, client, openai_req, backend_key, tool_name_map).await
+        handle_responses_streaming(
+            config,
+            client,
+            openai_req,
+            backend_key,
+            tool_name_map,
+            reasoning_cache,
+        )
+        .await
     } else {
-        handle_responses_non_streaming(config, client, openai_req, backend_key, tool_name_map)
-            .await
+        handle_responses_non_streaming(
+            config,
+            client,
+            openai_req,
+            backend_key,
+            tool_name_map,
+            reasoning_cache,
+        )
+        .await
     }
 }
 
@@ -426,6 +505,7 @@ async fn handle_non_streaming(
     openai_req: openai::OpenAIRequest,
     backend_key: Option<String>,
     tool_name_map: ToolNameMap,
+    reasoning_cache: SharedReasoningCache,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
     tracing::debug!("Sending non-streaming request to {}", url);
@@ -458,6 +538,16 @@ async fn handle_non_streaming(
     }
 
     let openai_resp: openai::OpenAIResponse = response.json().await?;
+    if let Some(choice) = openai_resp.choices.first() {
+        if let Some(tool_calls) = &choice.message.tool_calls {
+            store_reasoning_for_tool_calls(
+                &reasoning_cache,
+                choice.message.reasoning_content.as_deref(),
+                tool_calls,
+            )
+            .await;
+        }
+    }
     let anthropic_resp = transform::openai_to_anthropic(
         openai_resp,
         &openai_req.model,
@@ -475,6 +565,7 @@ async fn handle_streaming(
     openai_req: openai::OpenAIRequest,
     backend_key: Option<String>,
     tool_name_map: ToolNameMap,
+    reasoning_cache: SharedReasoningCache,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
     tracing::debug!("Sending streaming request to {}", url);
@@ -514,6 +605,7 @@ async fn handle_streaming(
         config.compat_mode,
         config.stream_chunk_timeout_secs,
         tool_name_map,
+        reasoning_cache,
     );
 
     let mut headers = HeaderMap::new();
@@ -534,6 +626,7 @@ fn create_sse_stream(
     compat_mode: CompatMode,
     chunk_timeout_secs: u64,
     tool_name_map: ToolNameMap,
+    reasoning_cache: SharedReasoningCache,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     async_stream::stream! {
         let mut buffer = String::new();
@@ -546,6 +639,7 @@ fn create_sse_stream(
         let mut active_block: Option<ActiveBlock> = None;
         let mut tool_states: BTreeMap<usize, ToolCallState> = BTreeMap::new();
         let mut think_filter = ThinkTagStreamFilter::default();
+        let mut reasoning_content = String::new();
 
         pin!(stream);
 
@@ -651,6 +745,7 @@ fn create_sse_stream(
 
                                     if let Some(reasoning) = &choice.delta.reasoning {
                                         if !reasoning.is_empty() {
+                                            reasoning_content.push_str(reasoning);
                                             if !profile.supports_reasoning() && compat_mode.is_strict() {
                                                 yield Ok(Bytes::from(stream_error_sse(
                                                     "reasoning deltas are not supported by the active backend profile",
@@ -682,6 +777,7 @@ fn create_sse_stream(
 
                                             if profile.supports_reasoning() {
                                                 for reasoning in embedded_reasoning {
+                                                    reasoning_content.push_str(&reasoning);
                                                     let (idx, transitions) = transition_to_thinking(
                                                         &mut active_block,
                                                         &mut next_content_index,
@@ -756,6 +852,7 @@ fn create_sse_stream(
 
                                             if let Some(function) = &tool_call.function {
                                                 if let Some(arguments) = &function.arguments {
+                                                    state.arguments.push_str(arguments);
                                                     if let Some(idx) = state.content_index {
                                                         yield Ok(Bytes::from(delta_block_sse(
                                                             idx,
@@ -770,6 +867,27 @@ fn create_sse_stream(
                                     }
 
                                     if let Some(finish_reason) = &choice.finish_reason {
+                                        let completed_tool_calls: Vec<_> = tool_states
+                                            .values()
+                                            .filter_map(|state| {
+                                                Some(openai::ToolCall {
+                                                    id: state.id.clone()?,
+                                                    call_type: "function".to_string(),
+                                                    function: openai::FunctionCall {
+                                                        name: state.name.clone()?,
+                                                        arguments: state.arguments.clone(),
+                                                    },
+                                                })
+                                            })
+                                            .collect();
+                                        if !completed_tool_calls.is_empty() {
+                                            store_reasoning_for_tool_calls(
+                                                &reasoning_cache,
+                                                Some(reasoning_content.as_str()),
+                                                &completed_tool_calls,
+                                            )
+                                            .await;
+                                        }
                                         if let Some(previous) = active_block.take() {
                                             yield Ok(Bytes::from(stop_block_sse(previous.index())));
                                         }
@@ -814,6 +932,7 @@ fn create_sse_stream(
         let (embedded_reasoning, visible_tail) = think_filter.finish();
         if profile.supports_reasoning() {
             for reasoning in embedded_reasoning {
+                reasoning_content.push_str(&reasoning);
                 let (idx, transitions) =
                     transition_to_thinking(&mut active_block, &mut next_content_index);
                 for event in transitions {
@@ -867,12 +986,24 @@ fn responses_to_openai(
             role: "system".to_string(),
             content: Some(openai::MessageContent::Text(instructions.clone())),
             name: None,
+            reasoning_content: None,
             tool_calls: None,
             tool_call_id: None,
         });
     }
 
     for item in &req.input {
+        if let Some(text) = item.as_str().filter(|value| !value.trim().is_empty()) {
+            messages.push(openai::Message {
+                role: "user".to_string(),
+                content: Some(openai::MessageContent::Text(text.to_string())),
+                name: None,
+                reasoning_content: None,
+                tool_calls: None,
+                tool_call_id: None,
+            });
+            continue;
+        }
         let item_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
         match item_type {
             "message" => {
@@ -921,6 +1052,7 @@ fn responses_to_openai(
                     role,
                     content,
                     name: None,
+                    reasoning_content: None,
                     tool_calls: None,
                     tool_call_id: None,
                 });
@@ -946,6 +1078,7 @@ fn responses_to_openai(
                     role: "assistant".to_string(),
                     content: None,
                     name: None,
+                    reasoning_content: None,
                     tool_calls: Some(vec![openai::ToolCall {
                         id: call_id.to_string(),
                         call_type: "function".to_string(),
@@ -977,6 +1110,7 @@ fn responses_to_openai(
                     role: "tool".to_string(),
                     content: Some(openai::MessageContent::Text(output)),
                     name: None,
+                    reasoning_content: None,
                     tool_calls: None,
                     tool_call_id: Some(call_id),
                 });
@@ -1037,6 +1171,13 @@ fn responses_to_openai(
         stream: req.stream,
         tools,
         tool_choice,
+        thinking: (profile == BackendProfile::Deepseek).then(|| openai::ThinkingConfig {
+            thinking_type: if responses_request_has_reasoning(req) {
+                "enabled".to_string()
+            } else {
+                "disabled".to_string()
+            },
+        }),
     })
 }
 
@@ -1046,6 +1187,7 @@ async fn handle_responses_non_streaming(
     openai_req: openai::OpenAIRequest,
     backend_key: Option<String>,
     tool_name_map: ToolNameMap,
+    reasoning_cache: SharedReasoningCache,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
     let mut req_builder = client.post(&url).json(&openai_req).timeout(Duration::from_secs(300));
@@ -1059,6 +1201,16 @@ async fn handle_responses_non_streaming(
         return Err(ProxyError::Upstream(format!("Upstream returned {}: {}", status, error_text)));
     }
     let openai_resp: openai::OpenAIResponse = response.json().await?;
+    if let Some(choice) = openai_resp.choices.first() {
+        if let Some(tool_calls) = &choice.message.tool_calls {
+            store_reasoning_for_tool_calls(
+                &reasoning_cache,
+                choice.message.reasoning_content.as_deref(),
+                tool_calls,
+            )
+            .await;
+        }
+    }
     let response_id = openai_resp.id.clone().unwrap_or_else(generate_message_id);
     let model = openai_resp
         .model
@@ -1103,6 +1255,7 @@ async fn handle_responses_streaming(
     openai_req: openai::OpenAIRequest,
     backend_key: Option<String>,
     tool_name_map: ToolNameMap,
+    reasoning_cache: SharedReasoningCache,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
     let mut req_builder = client.post(&url).json(&openai_req).timeout(Duration::from_secs(300));
@@ -1117,8 +1270,13 @@ async fn handle_responses_streaming(
     }
 
     let stream = response.bytes_stream();
-    let sse_stream =
-        create_responses_sse_stream(stream, openai_req.model.clone(), config.stream_chunk_timeout_secs, tool_name_map);
+    let sse_stream = create_responses_sse_stream(
+        stream,
+        openai_req.model.clone(),
+        config.stream_chunk_timeout_secs,
+        tool_name_map,
+        reasoning_cache,
+    );
 
     let mut headers = HeaderMap::new();
     headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
@@ -1132,6 +1290,7 @@ fn create_responses_sse_stream(
     fallback_model: String,
     chunk_timeout_secs: u64,
     tool_name_map: ToolNameMap,
+    reasoning_cache: SharedReasoningCache,
 ) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
     #[derive(Default)]
     struct FunctionState {
@@ -1148,6 +1307,7 @@ fn create_responses_sse_stream(
         let mut created_sent = false;
         let mut message_started = false;
         let mut message_text = String::new();
+        let mut reasoning_content = String::new();
         let mut functions: BTreeMap<usize, FunctionState> = BTreeMap::new();
         pin!(stream);
         let mut raw_buffer: Vec<u8> = Vec::new();
@@ -1212,6 +1372,11 @@ fn create_responses_sse_stream(
                                 }
 
                                 if let Some(choice) = chunk.choices.first() {
+                                    if let Some(reasoning) = &choice.delta.reasoning {
+                                        if !reasoning.is_empty() {
+                                            reasoning_content.push_str(reasoning);
+                                        }
+                                    }
                                     if let Some(content) = &choice.delta.content {
                                         if !content.is_empty() {
                                             if !message_started {
@@ -1276,6 +1441,27 @@ fn create_responses_sse_stream(
                                     }
 
                                     if choice.finish_reason.is_some() {
+                                        let completed_tool_calls: Vec<_> = functions
+                                            .values()
+                                            .filter_map(|state| {
+                                                Some(openai::ToolCall {
+                                                    id: state.id.clone()?,
+                                                    call_type: "function".to_string(),
+                                                    function: openai::FunctionCall {
+                                                        name: tool_name_map.to_backend(&state.name.clone()?),
+                                                        arguments: state.arguments.clone(),
+                                                    },
+                                                })
+                                            })
+                                            .collect();
+                                        if !completed_tool_calls.is_empty() {
+                                            store_reasoning_for_tool_calls(
+                                                &reasoning_cache,
+                                                Some(reasoning_content.as_str()),
+                                                &completed_tool_calls,
+                                            )
+                                            .await;
+                                        }
                                         if message_started {
                                             yield Ok(Bytes::from(sse_event("response.output_item.done", &json!({
                                                 "type": "response.output_item.done",
@@ -1458,6 +1644,7 @@ impl ActiveBlock {
 struct ToolCallState {
     id: Option<String>,
     name: Option<String>,
+    arguments: String,
     content_index: Option<usize>,
 }
 
@@ -1794,6 +1981,7 @@ mod tests {
             CompatMode::Strict,
             30,
             ToolNameMap::identity(),
+            Arc::new(RwLock::new(HashMap::new())),
         );
         tokio::pin!(sse);
 
@@ -1840,6 +2028,7 @@ mod tests {
             CompatMode::Compat,
             30,
             ToolNameMap::identity(),
+            Arc::new(RwLock::new(HashMap::new())),
         );
         tokio::pin!(sse);
 
@@ -2071,6 +2260,7 @@ mod tests {
                 },
             }]),
             tool_choice: None,
+            thinking: None,
         };
 
         let err = validate_deepseek_request(BackendProfile::Deepseek, &request).unwrap_err();

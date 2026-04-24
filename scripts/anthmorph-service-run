@@ -12,7 +12,11 @@ else
   CONFIG_FILE=${ANTHMORPH_CONFIG_FILE:-$CONFIG_FILE_DEFAULT}
 fi
 PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
-BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
+if [ -x "$PREBUILT_BIN" ]; then
+  BIN_PATH_DEFAULT=$PREBUILT_BIN
+else
+  BIN_PATH_DEFAULT=$ROOT_DIR/target/release/anthmorph
+fi
 SECRET_HELPER=$ROOT_DIR/scripts/anthmorph-secret
 if [ -x /opt/homebrew/bin/python3 ]; then
   PYTHON_BIN=/opt/homebrew/bin/python3
@@ -56,6 +60,10 @@ emit("STREAM_CHUNK_TIMEOUT_SECS", server.get("stream_chunk_timeout_secs", 30))
 emit("BIN_PATH", server.get("bin_path", os.environ["BIN_PATH_DEFAULT"]))
 PY
 )"
+
+if [ "${BIN_PATH:-}" = "$ROOT_DIR/target/release/anthmorph" ]; then
+  BIN_PATH=$BIN_PATH_DEFAULT
+fi
 
 if [ -n "${API_KEY:-}" ]; then
   resolved_api_key=$API_KEY

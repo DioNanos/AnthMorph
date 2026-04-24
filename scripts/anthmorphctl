@@ -16,7 +16,11 @@ LEGACY_ENV_FILE=$STATE_DIR/config.env
 PID_FILE=$STATE_DIR/anthmorph.pid
 LOG_FILE=$STATE_DIR/anthmorph.log
 PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
-BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
+if [ -x "$PREBUILT_BIN" ]; then
+  BIN_PATH_DEFAULT=$PREBUILT_BIN
+else
+  BIN_PATH_DEFAULT=$ROOT_DIR/target/release/anthmorph
+fi
 SECRET_HELPER=$ROOT_DIR/scripts/anthmorph-secret
 if [ -x /opt/homebrew/bin/python3 ]; then
   PYTHON_BIN=/opt/homebrew/bin/python3
@@ -151,6 +155,9 @@ emit("STREAM_CHUNK_TIMEOUT_SECS", server.get("stream_chunk_timeout_secs", 30))
 PY
   )"
   BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
+  if [ "$BIN_PATH" = "$ROOT_DIR/target/release/anthmorph" ]; then
+    BIN_PATH=$BIN_PATH_DEFAULT
+  fi
   write_legacy_env
 }
 

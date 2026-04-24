@@ -12,7 +12,9 @@ use clap::Parser;
 use config::{BackendProfile, CompatMode};
 use proxy::{build_cors_layer, Config};
 use reqwest::Client;
+use std::collections::HashMap;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -101,6 +103,7 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Arc::new(config);
     let models_cache = model_cache::new_cache(&config.known_models());
+    let reasoning_cache = Arc::new(RwLock::new(HashMap::<String, String>::new()));
 
     let rate_limiter: Option<rate_limiter::SharedRateLimiter> = config
         .rate_limit_per_minute
@@ -110,7 +113,8 @@ async fn main() -> anyhow::Result<()> {
         });
 
     // Initial model cache load
-    model_cache::refresh(&client, &config.models_url(), &models_cache).await;
+    model_cache::refresh(&client, &config.models_url(), config.api_key.as_deref(), &models_cache)
+        .await;
 
     // Background refresh every 60s with graceful shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -118,12 +122,13 @@ async fn main() -> anyhow::Result<()> {
         let client = client.clone();
         let models_url = config.models_url();
         let cache = models_cache.clone();
+        let api_key = config.api_key.clone();
         let mut shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
-                        model_cache::refresh(&client, &models_url, &cache).await;
+                        model_cache::refresh(&client, &models_url, api_key.as_deref(), &cache).await;
                     }
                     _ = shutdown.changed() => {
                         tracing::info!("Model cache refresh task shutting down");
@@ -161,6 +166,7 @@ async fn main() -> anyhow::Result<()> {
         .layer(Extension(config.clone()))
         .layer(Extension(client))
         .layer(Extension(models_cache))
+        .layer(Extension(reasoning_cache))
         .layer(Extension(rate_limiter))
         .layer(TraceLayer::new_for_http());
 

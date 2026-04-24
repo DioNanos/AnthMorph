@@ -46,9 +46,15 @@ fn dedupe_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
     out
 }
 
-pub async fn refresh(client: &Client, models_url: &str, state: &Cache) {
+pub async fn refresh(client: &Client, models_url: &str, api_key: Option<&str>, state: &Cache) {
     let result: Result<Vec<ModelInfo>, String> = async {
-        let resp = client.get(models_url).timeout(std::time::Duration::from_secs(30)).send().await.map_err(|e| e.to_string())?;
+        let mut req = client
+            .get(models_url)
+            .timeout(std::time::Duration::from_secs(30));
+        if let Some(api_key) = api_key.filter(|value| !value.is_empty()) {
+            req = req.header("Authorization", format!("Bearer {}", api_key));
+        }
+        let resp = req.send().await.map_err(|e| e.to_string())?;
         if !resp.status().is_success() {
             return Err(format!("models endpoint returned {}", resp.status()));
         }

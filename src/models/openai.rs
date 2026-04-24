@@ -24,6 +24,8 @@ pub struct OpenAIRequest {
     pub tools: Option<Vec<Tool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<ThinkingConfig>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,6 +35,8 @@ pub struct Message {
     pub content: Option<MessageContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,6 +147,12 @@ pub enum ToolChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolChoiceFunction {
     pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThinkingConfig {
+    #[serde(rename = "type")]
+    pub thinking_type: String,
 }
 
 // ============================================================================

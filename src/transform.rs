@@ -179,14 +179,41 @@ pub fn anthropic_to_openai(
                 role: "system".to_string(),
                 content: Some(openai::MessageContent::Text(system_text)),
                 name: None,
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
             });
         }
     }
 
+    let mut pending_assistant_reasoning: Vec<String> = Vec::new();
     for msg in req.messages {
-        openai_messages.extend(convert_message(msg, profile, compat_mode, tool_name_map)?);
+        if let Some(reasoning) = extract_reasoning_only_message(&msg, profile) {
+            pending_assistant_reasoning.push(reasoning);
+            continue;
+        }
+
+        let preserve_pending_reasoning = pending_reasoning_applies_to(&msg);
+        let mut converted = convert_message(msg, profile, compat_mode, tool_name_map)?;
+        if preserve_pending_reasoning {
+            if let Some(reasoning) = (!pending_assistant_reasoning.is_empty())
+                .then(|| pending_assistant_reasoning.join("\n\n"))
+            {
+                for message in converted.iter_mut() {
+                    if message.role == "assistant"
+                        && message.tool_calls.is_some()
+                        && message.reasoning_content.is_none()
+                    {
+                        message.reasoning_content = Some(reasoning.clone());
+                    }
+                }
+                pending_assistant_reasoning.clear();
+            }
+        } else if !pending_assistant_reasoning.is_empty() && clears_pending_reasoning(&converted) {
+            pending_assistant_reasoning.clear();
+        }
+
+        openai_messages.extend(converted);
     }
 
     let tools = req.tools.and_then(|tools| {
@@ -240,6 +267,49 @@ pub fn anthropic_to_openai(
                 },
             },
         }),
+        thinking: None,
+    })
+}
+
+fn extract_reasoning_only_message(
+    msg: &anthropic::Message,
+    profile: BackendProfile,
+) -> Option<String> {
+    if msg.role != "assistant" || !profile.supports_reasoning() {
+        return None;
+    }
+    let anthropic::MessageContent::Blocks(blocks) = &msg.content else {
+        return None;
+    };
+    if blocks.is_empty() {
+        return None;
+    }
+    let mut reasoning = Vec::new();
+    for block in blocks {
+        match block {
+            anthropic::ContentBlock::Thinking { thinking } => reasoning.push(thinking.clone()),
+            anthropic::ContentBlock::Other => {}
+            _ => return None,
+        }
+    }
+    (!reasoning.is_empty()).then(|| reasoning.join("\n\n"))
+}
+
+fn pending_reasoning_applies_to(msg: &anthropic::Message) -> bool {
+    if msg.role != "assistant" {
+        return false;
+    }
+    matches!(
+        &msg.content,
+        anthropic::MessageContent::Blocks(blocks)
+            if blocks.iter().any(|block| matches!(block, anthropic::ContentBlock::ToolUse { .. }))
+    )
+}
+
+fn clears_pending_reasoning(messages: &[openai::Message]) -> bool {
+    messages.iter().any(|message| {
+        (message.role == "assistant" && message.tool_calls.is_none())
+            || (message.role == "user" && message.tool_calls.is_none())
     })
 }
 
@@ -256,6 +326,7 @@ fn convert_message(
             result.push(openai::Message {
                 role: msg.role,
                 content: Some(openai::MessageContent::Text(text)),
+                reasoning_content: None,
                 tool_calls: None,
                 tool_call_id: None,
                 name: None,
@@ -263,6 +334,7 @@ fn convert_message(
         }
         anthropic::MessageContent::Blocks(blocks) => {
             let mut current_content_parts = Vec::new();
+            let mut reasoning_parts = Vec::new();
             let mut tool_calls = Vec::new();
 
             for block in blocks {
@@ -312,12 +384,17 @@ fn convert_message(
                         result.push(openai::Message {
                             role: "tool".to_string(),
                             content: Some(openai::MessageContent::Text(text)),
+                            reasoning_content: None,
                             tool_calls: None,
                             tool_call_id: Some(tool_use_id),
                             name: None,
                         });
                     }
                     anthropic::ContentBlock::Thinking { thinking } => {
+                        if profile.supports_reasoning() {
+                            reasoning_parts.push(thinking);
+                            continue;
+                        }
                         if !compat_mode.is_strict() {
                             current_content_parts.push(openai::ContentPart::Text {
                                 data: format!("[assistant thinking omitted]\n{thinking}"),
@@ -383,6 +460,8 @@ fn convert_message(
                 result.push(openai::Message {
                     role: msg.role,
                     content,
+                    reasoning_content: (!reasoning_parts.is_empty() && !tool_calls.is_empty())
+                        .then(|| reasoning_parts.join("\n\n")),
                     tool_calls: if tool_calls.is_empty() {
                         None
                     } else {
@@ -600,7 +679,7 @@ mod tests {
         let err = anthropic_to_openai(
             req,
             "model",
-            BackendProfile::Chutes,
+            BackendProfile::OpenaiGeneric,
             CompatMode::Strict,
             &ToolNameMap::identity(),
         )

@@ -70,6 +70,19 @@ function buildRelease() {
   }
 }
 
+function syncReleaseToPrebuilt() {
+  if (!fs.existsSync(releaseBin)) {
+    return;
+  }
+  fs.copyFileSync(releaseBin, prebuiltBin);
+  fs.chmodSync(prebuiltBin, 0o755);
+  if (os.platform() === "darwin") {
+    spawnSync("codesign", ["--force", "--sign", "-", prebuiltBin], {
+      stdio: "ignore",
+    });
+  }
+}
+
 function bootstrapDefaultConfig() {
   const configDir = path.join(os.homedir(), ".config", "anthmorph");
   const configFile = path.join(configDir, "config.toml");
@@ -99,6 +112,7 @@ if (isTermux && isExecutable(prebuiltBin) && binaryVersion(prebuiltBin) === expe
 if (os.platform() === "linux" || os.platform() === "darwin") {
   console.log("[anthmorph] building local release binary for this platform");
   buildRelease();
+  syncReleaseToPrebuilt();
   bootstrapDefaultConfig();
   process.exit(0);
 }
