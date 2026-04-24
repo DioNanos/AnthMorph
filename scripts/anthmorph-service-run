@@ -13,13 +13,18 @@ else
 fi
 PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
 BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
+if [ -x /opt/homebrew/bin/python3 ]; then
+  PYTHON_BIN=/opt/homebrew/bin/python3
+else
+  PYTHON_BIN=python3
+fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
-  python3 "$ROOT_DIR/scripts/write_default_config.py" "$CONFIG_FILE"
+  "$PYTHON_BIN" "$ROOT_DIR/scripts/write_default_config.py" "$CONFIG_FILE"
 fi
 
 eval "$(
-  CONFIG_FILE="$CONFIG_FILE" BIN_PATH_DEFAULT="$BIN_PATH_DEFAULT" python3 - <<'PY'
+  CONFIG_FILE="$CONFIG_FILE" BIN_PATH_DEFAULT="$BIN_PATH_DEFAULT" "$PYTHON_BIN" - <<'PY'
 import os, shlex, tomllib
 from pathlib import Path
 path = Path(os.environ["CONFIG_FILE"])

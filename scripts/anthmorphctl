@@ -17,6 +17,11 @@ PID_FILE=$STATE_DIR/anthmorph.pid
 LOG_FILE=$STATE_DIR/anthmorph.log
 PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
 BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
+if [ -x /opt/homebrew/bin/python3 ]; then
+  PYTHON_BIN=/opt/homebrew/bin/python3
+else
+  PYTHON_BIN=python3
+fi
 LAUNCHD_LABEL=com.mmmbuto.anthmorph
 LAUNCHD_PLIST=$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist
 SYSTEMD_UNIT=$HOME/.config/systemd/user/anthmorph.service
@@ -76,7 +81,7 @@ USAGE
 
 ensure_config() {
   if [ ! -f "$CONFIG_FILE" ]; then
-    python3 "$ROOT_DIR/scripts/write_default_config.py" "$CONFIG_FILE"
+    "$PYTHON_BIN" "$ROOT_DIR/scripts/write_default_config.py" "$CONFIG_FILE"
   fi
 }
 
@@ -101,7 +106,7 @@ EOF
 load_config() {
   ensure_config
   eval "$(
-    CONFIG_FILE="$CONFIG_FILE" python3 - <<'PY'
+    CONFIG_FILE="$CONFIG_FILE" "$PYTHON_BIN" - <<'PY'
 import os, shlex, tomllib
 from pathlib import Path
 
@@ -160,7 +165,7 @@ save_config_values() {
   REASONING_MODEL="${REASONING_MODEL:-}" \
   API_KEY_ENV="${API_KEY_ENV:-}" \
   API_KEY="${API_KEY:-}" \
-  python3 - <<'PY'
+  "$PYTHON_BIN" - <<'PY'
 import os
 import sys
 from pathlib import Path
@@ -307,7 +312,7 @@ config_show_cmd() {
 
 profile_list_cmd() {
   ensure_config
-  CONFIG_FILE="$CONFIG_FILE" python3 - <<'PY'
+  CONFIG_FILE="$CONFIG_FILE" "$PYTHON_BIN" - <<'PY'
 import os, tomllib
 from pathlib import Path
 data = tomllib.loads(Path(os.environ["CONFIG_FILE"]).read_text())
@@ -324,7 +329,7 @@ profile_use_cmd() {
   ensure_config
   profile_name=${1:-}
   [ -n "$profile_name" ] || { echo "missing profile name" >&2; exit 1; }
-  CONFIG_FILE="$CONFIG_FILE" PROFILE_NAME="$profile_name" python3 - <<'PY'
+  CONFIG_FILE="$CONFIG_FILE" PROFILE_NAME="$profile_name" "$PYTHON_BIN" - <<'PY'
 import os, tomllib, sys
 from pathlib import Path
 path = Path(os.environ["CONFIG_FILE"])
@@ -435,7 +440,7 @@ bootstrap_claude_code_cmd() {
     BOOTSTRAP_BASE_URL="$bootstrap_base_url" \
     BOOTSTRAP_TIMEOUT_MS="$bootstrap_timeout_ms" \
     BOOTSTRAP_MODEL="$bootstrap_model" \
-    python3 - <<'PY'
+    "$PYTHON_BIN" - <<'PY'
 import json, os
 model = os.environ["BOOTSTRAP_MODEL"]
 print(json.dumps({"env": {
@@ -452,7 +457,7 @@ PY
 )
   if [ "$write_mode" -eq 1 ]; then
     mkdir -p "$HOME/.claude"
-    SETTINGS_FILE="$HOME/.claude/settings.json" SETTINGS_JSON="$settings_json" python3 - <<'PY'
+    SETTINGS_FILE="$HOME/.claude/settings.json" SETTINGS_JSON="$settings_json" "$PYTHON_BIN" - <<'PY'
 import json, os
 from pathlib import Path
 path = Path(os.environ["SETTINGS_FILE"])
@@ -491,7 +496,7 @@ bootstrap_codex_cmd() {
   done
   [ -n "$base_url" ] || base_url="http://127.0.0.1:${PORT:-3108}/v1"
   [ -n "$bootstrap_model" ] || bootstrap_model="${PRIMARY_MODEL:-deepseek-v4-pro}"
-  snippet=$(PROVIDER_NAME="$provider_name" BASE_URL="$base_url" MODEL="$bootstrap_model" python3 - <<'PY'
+  snippet=$(PROVIDER_NAME="$provider_name" BASE_URL="$base_url" MODEL="$bootstrap_model" "$PYTHON_BIN" - <<'PY'
 import os
 name = os.environ["PROVIDER_NAME"]
 base_url = os.environ["BASE_URL"]
@@ -675,6 +680,10 @@ service_install_cmd() {
   <array>
     <string>$ROOT_DIR/scripts/anthmorph-service-run</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>StandardOutPath</key><string>$LOG_FILE</string>
