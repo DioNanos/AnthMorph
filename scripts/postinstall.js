@@ -8,6 +8,7 @@ const root = path.resolve(__dirname, "..");
 const prebuiltDir = path.join(root, "prebuilt");
 const prebuiltBin = path.join(prebuiltDir, "anthmorph");
 const releaseBin = path.join(root, "target", "release", "anthmorph");
+const defaultConfigScript = path.join(root, "scripts", "write_default_config.py");
 const expectedVersion = packageJson.version;
 const isTermux =
   process.env.TERMUX_VERSION !== undefined ||
@@ -69,6 +70,24 @@ function buildRelease() {
   }
 }
 
+function bootstrapDefaultConfig() {
+  const configDir = path.join(os.homedir(), ".config", "anthmorph");
+  const configFile = path.join(configDir, "config.toml");
+  if (fs.existsSync(configFile)) {
+    return;
+  }
+  fs.mkdirSync(configDir, { recursive: true });
+  const write = spawnSync("python3", [defaultConfigScript, configFile], {
+    cwd: root,
+    stdio: "inherit",
+  });
+  if (write.status !== 0) {
+    console.warn("[anthmorph] failed to bootstrap default config");
+  } else {
+    console.log(`[anthmorph] wrote default config to ${configFile}`);
+  }
+}
+
 fs.mkdirSync(prebuiltDir, { recursive: true });
 ensurePrebuiltPermissions();
 
@@ -80,6 +99,7 @@ if (isTermux && isExecutable(prebuiltBin) && binaryVersion(prebuiltBin) === expe
 if (os.platform() === "linux" || os.platform() === "darwin") {
   console.log("[anthmorph] building local release binary for this platform");
   buildRelease();
+  bootstrapDefaultConfig();
   process.exit(0);
 }
 

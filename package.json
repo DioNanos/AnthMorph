@@ -1,7 +1,7 @@
 {
   "name": "@mmmbuto/anthmorph",
   "version": "0.1.5",
-  "description": "Chutes-first Anthropic /v1/messages proxy for Chutes and OpenAI-compatible backends",
+  "description": "Universal Anthropic and Responses proxy for DeepSeek, Chutes, and OpenAI-compatible backends",
   "license": "MIT",
   "author": "Davide A. Guglielmi",
   "bin": {
@@ -13,12 +13,14 @@
     "prebuilt/",
     "scripts/anthmorphctl",
     "scripts/anthmorph-service-run",
+    "scripts/write_default_config.py",
     "scripts/docker_build_linux.sh",
     "scripts/docker_npm_dry_run.sh",
     "scripts/docker_release_checks.sh",
     "scripts/docker_rust_test.sh",
     "scripts/docker_secret_scan.sh",
     "scripts/postinstall.js",
+    "scripts/test_deepseek4_direct.sh",
     "scripts/test_claude_code_patterns_real.sh",
     "src/",
     "docs/CLAUDE_CODE_SETUP.md",
@@ -40,7 +42,8 @@
     "verify:docker": "sh scripts/docker_release_checks.sh",
     "pack:dry-run": "npm pack --dry-run",
     "pack:dry-run:docker": "sh scripts/docker_npm_dry_run.sh",
-    "publish:dry-run:docker": "sh scripts/docker_npm_dry_run.sh publish"
+    "publish:dry-run:docker": "sh scripts/docker_npm_dry_run.sh publish",
+    "test:deepseek:direct": "sh scripts/test_deepseek4_direct.sh"
   },
   "keywords": [
     "anthropic",

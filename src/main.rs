@@ -4,6 +4,7 @@ mod model_cache;
 mod models;
 mod proxy;
 mod rate_limiter;
+mod tool_names;
 mod transform;
 
 use axum::{routing::post, Extension, Router};
@@ -150,6 +151,7 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/messages", post(proxy::proxy_handler))
+        .route("/v1/responses", post(proxy::responses_handler))
         .route(
             "/v1/messages/count_tokens",
             post(proxy::count_tokens_handler),

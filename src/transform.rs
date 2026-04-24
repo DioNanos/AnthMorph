@@ -1,6 +1,7 @@
 use crate::config::{BackendProfile, CompatMode};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
+use crate::tool_names::ToolNameMap;
 use serde_json::{json, Value};
 
 pub fn generate_message_id() -> String {
@@ -139,6 +140,7 @@ pub fn anthropic_to_openai(
     model: &str,
     profile: BackendProfile,
     compat_mode: CompatMode,
+    tool_name_map: &ToolNameMap,
 ) -> ProxyResult<openai::OpenAIRequest> {
     let thinking_requested = has_thinking(&req);
     let _thinking_budget = req.thinking.as_ref().and_then(|cfg| cfg.budget_tokens);
@@ -184,7 +186,7 @@ pub fn anthropic_to_openai(
     }
 
     for msg in req.messages {
-        openai_messages.extend(convert_message(msg, profile, compat_mode)?);
+        openai_messages.extend(convert_message(msg, profile, compat_mode, tool_name_map)?);
     }
 
     let tools = req.tools.and_then(|tools| {
@@ -202,7 +204,7 @@ pub fn anthropic_to_openai(
                     .map(|t| openai::Tool {
                         tool_type: "function".to_string(),
                         function: openai::Function {
-                            name: t.name,
+                            name: tool_name_map.to_backend(&t.name),
                             description: t.description,
                             parameters: clean_schema(t.input_schema),
                         },
@@ -226,7 +228,18 @@ pub fn anthropic_to_openai(
         stop: req.stop_sequences,
         stream: req.stream,
         tools,
-        tool_choice: extract_tool_choice(&req.extra),
+        tool_choice: extract_tool_choice(&req.extra).map(|choice| match choice {
+            openai::ToolChoice::String(value) => openai::ToolChoice::String(value),
+            openai::ToolChoice::Object {
+                tool_type,
+                function,
+            } => openai::ToolChoice::Object {
+                tool_type,
+                function: openai::ToolChoiceFunction {
+                    name: tool_name_map.to_backend(&function.name),
+                },
+            },
+        }),
     })
 }
 
@@ -234,6 +247,7 @@ fn convert_message(
     msg: anthropic::Message,
     profile: BackendProfile,
     compat_mode: CompatMode,
+    tool_name_map: &ToolNameMap,
 ) -> ProxyResult<Vec<openai::Message>> {
     let mut result = Vec::new();
 
@@ -272,7 +286,7 @@ fn convert_message(
                             id,
                             call_type: "function".to_string(),
                             function: openai::FunctionCall {
-                                name,
+                                name: tool_name_map.to_backend(&name),
                                 arguments: serde_json::to_string(&input)?,
                             },
                         });
@@ -415,6 +429,7 @@ pub fn openai_to_anthropic(
     fallback_model: &str,
     profile: BackendProfile,
     compat_mode: CompatMode,
+    tool_name_map: &ToolNameMap,
 ) -> ProxyResult<anthropic::AnthropicResponse> {
     let choice = resp
         .choices
@@ -475,7 +490,7 @@ pub fn openai_to_anthropic(
 
             content.push(anthropic::ResponseContent::ToolUse {
                 id: tool_call.id.clone(),
-                name: tool_call.function.name.clone(),
+                name: tool_name_map.to_client(&tool_call.function.name),
                 input,
             });
         }
@@ -515,6 +530,7 @@ mod tests {
     use crate::models::anthropic::{
         AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt, Tool,
     };
+    use crate::tool_names::ToolNameMap;
 
     fn sample_request() -> AnthropicRequest {
         AnthropicRequest {
@@ -550,6 +566,7 @@ mod tests {
             "model",
             BackendProfile::OpenaiGeneric,
             CompatMode::Strict,
+            &ToolNameMap::identity(),
         )
         .unwrap();
         assert_eq!(transformed.top_k, None);
@@ -559,7 +576,14 @@ mod tests {
     fn keeps_top_k_for_chutes_profile() {
         let req = sample_request();
         let transformed =
-            anthropic_to_openai(req, "model", BackendProfile::Chutes, CompatMode::Strict).unwrap();
+            anthropic_to_openai(
+                req,
+                "model",
+                BackendProfile::Chutes,
+                CompatMode::Strict,
+                &ToolNameMap::identity(),
+            )
+            .unwrap();
         assert_eq!(transformed.top_k, Some(40));
     }
 
@@ -573,7 +597,13 @@ mod tests {
             }]),
         }];
 
-        let err = anthropic_to_openai(req, "model", BackendProfile::Chutes, CompatMode::Strict)
+        let err = anthropic_to_openai(
+            req,
+            "model",
+            BackendProfile::Chutes,
+            CompatMode::Strict,
+            &ToolNameMap::identity(),
+        )
             .unwrap_err();
         assert!(err.to_string().contains("thinking blocks"));
     }
@@ -607,7 +637,14 @@ mod tests {
         };
 
         let out =
-            anthropic_to_openai(req, "model", BackendProfile::Chutes, CompatMode::Strict).unwrap();
+            anthropic_to_openai(
+                req,
+                "model",
+                BackendProfile::Chutes,
+                CompatMode::Strict,
+                &ToolNameMap::identity(),
+            )
+            .unwrap();
         assert_eq!(out.messages[0].role, "system");
         match out.messages[0].content.as_ref().unwrap() {
             openai::MessageContent::Text(text) => assert_eq!(text, "one\n\ntwo"),
@@ -635,7 +672,13 @@ mod tests {
             },
         };
 
-        let out = openai_to_anthropic(resp, "fallback", BackendProfile::Chutes, CompatMode::Strict)
+        let out = openai_to_anthropic(
+            resp,
+            "fallback",
+            BackendProfile::Chutes,
+            CompatMode::Strict,
+            &ToolNameMap::identity(),
+        )
             .unwrap();
         match &out.content[0] {
             anthropic::ResponseContent::Thinking { thinking } => assert_eq!(thinking, "chain"),
@@ -667,6 +710,7 @@ mod tests {
             "fallback",
             BackendProfile::OpenaiGeneric,
             CompatMode::Strict,
+            &ToolNameMap::identity(),
         )
         .unwrap_err();
         assert!(err.to_string().contains("reasoning content"));
@@ -687,6 +731,7 @@ mod tests {
             "model",
             BackendProfile::OpenaiGeneric,
             CompatMode::Compat,
+            &ToolNameMap::identity(),
         )
         .unwrap();
 
@@ -739,6 +784,7 @@ mod tests {
             "model",
             BackendProfile::OpenaiGeneric,
             CompatMode::Compat,
+            &ToolNameMap::identity(),
         )
         .unwrap();
         let rendered = serde_json::to_value(&out.messages[0]).unwrap().to_string();
@@ -770,6 +816,7 @@ mod tests {
             "fallback",
             BackendProfile::OpenaiGeneric,
             CompatMode::Compat,
+            &ToolNameMap::identity(),
         )
         .unwrap();
 
@@ -811,6 +858,7 @@ mod tests {
             "fallback",
             BackendProfile::Chutes,
             CompatMode::Strict,
+            &ToolNameMap::identity(),
         )
         .unwrap();
 
@@ -830,5 +878,35 @@ mod tests {
         assert_eq!(map_stop_reason(Some("length")), Some("max_tokens".to_string()));
         assert_eq!(map_stop_reason(Some("content_filter")), Some("end_turn".to_string()));
         assert_eq!(map_stop_reason(None), None);
+    }
+
+    #[test]
+    fn deepseek_profile_shortens_long_tool_names() {
+        let mut req = sample_request();
+        req.tools = Some(vec![Tool {
+            name: "mcp__memory__memory_read__this_name_is_definitely_way_beyond_sixty_four_chars"
+                .to_string(),
+            description: Some("desc".to_string()),
+            input_schema: json!({"type":"object","properties":{}}),
+            tool_type: None,
+        }]);
+        let map = ToolNameMap::from_names(
+            req.tools
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|tool| tool.name.as_str()),
+            64,
+        );
+        let out = anthropic_to_openai(
+            req,
+            "deepseek-v4-pro",
+            BackendProfile::Deepseek,
+            CompatMode::Compat,
+            &map,
+        )
+        .unwrap();
+        let backend_name = &out.tools.as_ref().unwrap()[0].function.name;
+        assert!(backend_name.len() <= 64);
     }
 }

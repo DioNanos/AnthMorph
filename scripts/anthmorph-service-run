@@ -3,20 +3,52 @@ set -eu
 
 SCRIPT_PATH=$(readlink -f -- "$0" 2>/dev/null || printf "%s" "$0")
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
-STATE_DIR=${ANTHMORPH_STATE_DIR:-$ROOT_DIR/.anthmorph}
-CONFIG_FILE=$STATE_DIR/config.env
+HOME_CONFIG_DIR=${HOME}/.config/anthmorph
+LOCAL_STATE_DIR=$ROOT_DIR/.anthmorph
+CONFIG_FILE_DEFAULT=$HOME_CONFIG_DIR/config.toml
+if [ -f "$LOCAL_STATE_DIR/config.toml" ] && [ ! -f "$CONFIG_FILE_DEFAULT" ]; then
+  CONFIG_FILE=$LOCAL_STATE_DIR/config.toml
+else
+  CONFIG_FILE=${ANTHMORPH_CONFIG_FILE:-$CONFIG_FILE_DEFAULT}
+fi
 PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
 BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
 
 if [ ! -f "$CONFIG_FILE" ]; then
-  echo "missing config: run 'anthmorphctl init ...' first" >&2
-  exit 1
+  python3 "$ROOT_DIR/scripts/write_default_config.py" "$CONFIG_FILE"
 fi
 
-# shellcheck disable=SC1090
-. "$CONFIG_FILE"
-
-BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
+eval "$(
+  CONFIG_FILE="$CONFIG_FILE" BIN_PATH_DEFAULT="$BIN_PATH_DEFAULT" python3 - <<'PY'
+import os, shlex, tomllib
+from pathlib import Path
+path = Path(os.environ["CONFIG_FILE"])
+data = tomllib.loads(path.read_text())
+server = data.get("server", {})
+runtime = data.get("runtime", {})
+active = runtime.get("active_profile", "deepseek4")
+profile = data.get("profiles", {}).get(active, {})
+def emit(k, v):
+    if v is None:
+        v = ""
+    print(f"{k}={shlex.quote(str(v))}")
+emit("PORT", server.get("port", 3108))
+emit("COMPAT_MODE", server.get("compat_mode", "compat"))
+emit("BACKEND_PROFILE", profile.get("backend", "deepseek"))
+emit("BACKEND_URL", profile.get("base_url", "https://api.deepseek.com"))
+emit("PRIMARY_MODEL", profile.get("model", "deepseek-v4-pro"))
+emit("REASONING_MODEL", profile.get("reasoning_model", profile.get("model", "")))
+emit("API_KEY_ENV", profile.get("api_key_env", ""))
+emit("API_KEY", profile.get("api_key", ""))
+emit("INGRESS_API_KEY", server.get("ingress_api_key", ""))
+origins = server.get("allow_origins", [])
+if isinstance(origins, list):
+    origins = ",".join(origins)
+emit("ALLOWED_ORIGINS", origins)
+emit("STREAM_CHUNK_TIMEOUT_SECS", server.get("stream_chunk_timeout_secs", 30))
+emit("BIN_PATH", server.get("bin_path", os.environ["BIN_PATH_DEFAULT"]))
+PY
+)"
 
 if [ -n "${API_KEY:-}" ]; then
   resolved_api_key=$API_KEY
@@ -27,27 +59,20 @@ else
 fi
 
 if [ -z "${resolved_api_key:-}" ]; then
-  echo "missing API key: configure API_KEY_ENV or save an API key" >&2
+  echo "missing API key: configure api_key_env or api_key in $CONFIG_FILE" >&2
   exit 1
 fi
 
-export PORT=${PORT:-3000}
-export ANTHMORPH_BACKEND_PROFILE=${BACKEND_PROFILE:-}
-export ANTHMORPH_COMPAT_MODE=${COMPAT_MODE:-strict}
-export ANTHMORPH_BACKEND_URL=${BACKEND_URL:-}
-export ANTHMORPH_PRIMARY_MODEL=${PRIMARY_MODEL:-}
+export PORT
+export ANTHMORPH_BACKEND_PROFILE=$BACKEND_PROFILE
+export ANTHMORPH_COMPAT_MODE=${COMPAT_MODE:-compat}
+export ANTHMORPH_BACKEND_URL=$BACKEND_URL
+export ANTHMORPH_PRIMARY_MODEL=$PRIMARY_MODEL
 export ANTHMORPH_API_KEY=$resolved_api_key
+export ANTHMORPH_STREAM_CHUNK_TIMEOUT_SECS=$STREAM_CHUNK_TIMEOUT_SECS
 
-if [ -n "${REASONING_MODEL:-}" ]; then
-  export ANTHMORPH_REASONING_MODEL=$REASONING_MODEL
-fi
-
-if [ -n "${INGRESS_API_KEY:-}" ]; then
-  export ANTHMORPH_INGRESS_API_KEY=$INGRESS_API_KEY
-fi
-
-if [ -n "${ALLOWED_ORIGINS:-}" ]; then
-  export ANTHMORPH_ALLOWED_ORIGINS=$ALLOWED_ORIGINS
-fi
+if [ -n "${REASONING_MODEL:-}" ]; then export ANTHMORPH_REASONING_MODEL=$REASONING_MODEL; fi
+if [ -n "${INGRESS_API_KEY:-}" ]; then export ANTHMORPH_INGRESS_API_KEY=$INGRESS_API_KEY; fi
+if [ -n "${ALLOWED_ORIGINS:-}" ]; then export ANTHMORPH_ALLOWED_ORIGINS=$ALLOWED_ORIGINS; fi
 
 exec "$BIN_PATH"

@@ -205,6 +205,33 @@ fn post_count_tokens(server: &TestServer, payload: &Value) -> (u16, Value) {
     (status, value)
 }
 
+fn post_responses(server: &TestServer, payload: &Value) -> (u16, Value) {
+    let body_path = env::temp_dir().join(format!("anthmorph-itest-responses-{}.json", server.port));
+    let payload_text = serde_json::to_string(payload).expect("serialize responses payload");
+
+    let output = Command::new("curl")
+        .arg("-sS")
+        .arg("-o")
+        .arg(&body_path)
+        .arg("-w")
+        .arg("%{http_code}")
+        .arg(format!("http://127.0.0.1:{}/v1/responses", server.port))
+        .arg("-H")
+        .arg("content-type: application/json")
+        .arg("-d")
+        .arg(payload_text)
+        .output()
+        .expect("run curl responses request");
+
+    let status_text = String::from_utf8(output.stdout).expect("status utf8");
+    let status = status_text.trim().parse::<u16>().expect("parse status code");
+    let body = fs::read_to_string(&body_path).expect("read responses body");
+    let value: Value = serde_json::from_str(&body).unwrap_or_else(|err| {
+        panic!("parse responses body as json failed: {err}; status={status}; body={body}")
+    });
+    (status, value)
+}
+
 fn get_models(server: &TestServer) -> (u16, Value) {
     let body_path = env::temp_dir().join(format!("anthmorph-itest-models-{}.json", server.port));
     let output = Command::new("curl")
@@ -246,6 +273,14 @@ fn is_retryable_provider_failure(status: u16, body: &str) -> bool {
     ]
     .iter()
     .any(|needle| body_lower.contains(needle))
+}
+
+fn is_auth_provider_failure(status: u16, body: &str) -> bool {
+    if status != 401 {
+        return false;
+    }
+    let body_lower = body.to_ascii_lowercase();
+    body_lower.contains("invalid") || body_lower.contains("unauthorized") || body_lower.contains("authentication")
 }
 
 fn post_messages_with_retry(server: &TestServer, payload: &Value) -> Option<(u16, Value)> {
@@ -550,4 +585,93 @@ fn minimax_claude_code_payload_corpus_streaming() {
         );
         assert_claude_stream_shape(&body, true);
     }
+}
+
+#[test]
+fn deepseek_real_backend_smoke() {
+    let Some(api_key) = require_env("DEEPSEEK_API_KEY") else {
+        return;
+    };
+    let server = start_server(
+        "deepseek",
+        &env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string()),
+        &env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string()),
+        &api_key,
+    );
+
+    let maybe = post_messages_with_retry(&server, &base_payload());
+    let Some((status, response)) = maybe else {
+        return;
+    };
+    if is_auth_provider_failure(status, &response.to_string()) {
+        eprintln!("quarantining deepseek smoke due to auth failure: {response}");
+        return;
+    }
+    let text = response["content"]
+        .as_array()
+        .and_then(|items| items.iter().find_map(|item| item.get("text").and_then(Value::as_str)))
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    assert!(text.contains("ANTHMORPH_OK"), "unexpected text: {text}");
+}
+
+#[test]
+fn deepseek_long_tool_names_are_shortened_for_claude_path() {
+    let Some(api_key) = require_env("DEEPSEEK_API_KEY") else {
+        return;
+    };
+    let server = start_server(
+        "deepseek",
+        &env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string()),
+        &env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string()),
+        &api_key,
+    );
+
+    let payload = serde_json::json!({
+        "model": "claude-sonnet-4",
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "call the tool if needed, otherwise answer ok"}],
+        "tools": [{
+            "name": "mcp__memory__memory_read__this_name_is_definitely_way_beyond_sixty_four_chars",
+            "description": "memory",
+            "input_schema": {"type": "object", "properties": {}}
+        }]
+    });
+    let (status, body) = post_messages(&server, &payload);
+    if is_auth_provider_failure(status, &body.to_string()) {
+        eprintln!("quarantining deepseek long-tool test due to auth failure: {body}");
+        return;
+    }
+    assert_eq!(status, 200, "unexpected status: {body}");
+}
+
+#[test]
+fn deepseek_responses_path_smoke() {
+    let Some(api_key) = require_env("DEEPSEEK_API_KEY") else {
+        return;
+    };
+    let server = start_server(
+        "deepseek",
+        &env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".to_string()),
+        &env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string()),
+        &api_key,
+    );
+    let payload = serde_json::json!({
+        "model": "deepseek-v4-pro",
+        "stream": false,
+        "instructions": "Reply exactly OK",
+        "input": [{
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "Reply exactly OK"}]
+        }]
+    });
+    let (status, body) = post_responses(&server, &payload);
+    if is_auth_provider_failure(status, &body.to_string()) {
+        eprintln!("quarantining deepseek responses test due to auth failure: {body}");
+        return;
+    }
+    assert_eq!(status, 200, "unexpected status: {body}");
+    assert_eq!(body["object"], "response");
 }

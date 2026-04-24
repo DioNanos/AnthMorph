@@ -6,24 +6,28 @@
 [![Target](https://img.shields.io/badge/Target-Termux%20%2F%20Linux-green.svg)](https://termux.dev)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
 
-AnthMorph is a Chutes-first Anthropic `/v1/messages` proxy written in Rust.
-It lets Claude-style clients talk to Chutes or other OpenAI-compatible backends through a profile-aware translation layer optimized for Claude Code CLI compatibility.
+AnthMorph is a universal Rust proxy for Anthropic `/v1/messages` and OpenAI `/v1/responses`.
+It lets Claude-style clients and Codex-style clients talk to DeepSeek, Chutes, or other OpenAI-compatible backends through a profile-aware translation layer.
 
 ## Project Status
 
 - Current line: `0.1.5`
-- Primary target: `chutes.ai`
-- Secondary target: generic OpenAI-compatible endpoints
+- Primary target: `deepseek-v4-pro` through AnthMorph
+- Secondary targets: `chutes.ai` and generic OpenAI-compatible endpoints
 - Release model: MIT-licensed GitHub repo plus public npm package
 - Packaging model: one npm package with Termux prebuilt and Linux source-build path
 
 ## Highlights
 
-- Anthropic `/v1/messages` ingress with OpenAI-compatible upstream translation
-- `chutes` and `openai_generic` backend profiles
+- Anthropic `/v1/messages` ingress for Claude-style clients
+- OpenAI `/v1/responses` ingress for Codex/codex-vl
+- `deepseek`, `chutes`, and `openai_generic` backend profiles
 - `strict` and `compat` runtime modes
+- long MCP tool-name normalization for DeepSeek's 64-char function-name limit
 - Claude Code bootstrap via `anthmorphctl bootstrap claude-code`
+- Codex bootstrap snippet via `anthmorphctl bootstrap codex`
 - real-backend validation for Chutes, MiniMax, and Alibaba rejection flow
+- direct DeepSeek validation script for `/models`, `/chat/completions`, and negative `/v1/responses`
 - Docker release checks for secret scan, Rust tests, Linux build, and npm dry-runs
 
 ## Install
@@ -48,19 +52,38 @@ Linux Docker build:
 
 ## Quickstart
 
-Initialize and run against Chutes:
+Initialize the canonical config and pick DeepSeek:
 
 ```bash
-export CHUTES_API_KEY=your_key_here
-anthmorphctl init chutes --port 3107 --compat-mode compat
+anthmorphctl config bootstrap
+anthmorphctl profile list
+anthmorphctl init deepseek4 --port 3108 --compat-mode compat
 anthmorphctl start
 anthmorphctl status
+```
+
+Canonical config lives in:
+
+```bash
+~/.config/anthmorph/config.toml
+```
+
+Local dev fallback remains:
+
+```bash
+./.anthmorph/config.toml
 ```
 
 Point Claude Code at AnthMorph:
 
 ```bash
 anthmorphctl bootstrap claude-code --write
+```
+
+Generate a Codex provider snippet:
+
+```bash
+anthmorphctl bootstrap codex
 ```
 
 Stop the proxy:
@@ -89,34 +112,17 @@ For local operator use, build and run AnthMorph through `anthmorphctl`:
 
 ```bash
 cargo build --release
-anthmorphctl init chutes --port 3107 --compat-mode compat
+anthmorphctl init deepseek4 --port 3108 --compat-mode compat
 anthmorphctl start
 ```
 
 `anthmorphctl` now exports runtime configuration through environment variables before launch, so backend secrets do not appear in process arguments.
 
-For a persistent user service on Linux:
+For a persistent user service:
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cat > ~/.config/systemd/user/anthmorph.service <<'EOF'
-[Unit]
-Description=AnthMorph proxy
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-WorkingDirectory=/path/to/AnthMorph
-ExecStart=/path/to/AnthMorph/scripts/anthmorph-service-run
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=default.target
-EOF
-systemctl --user daemon-reload
-systemctl --user enable --now anthmorph.service
+anthmorphctl service install
+anthmorphctl service status
 ```
 
 ## Validation
@@ -138,6 +144,12 @@ Real payload replay:
 ```bash
 ./scripts/test_claude_code_patterns_real.sh chutes
 ./scripts/test_claude_code_patterns_real.sh minimax
+```
+
+Direct DeepSeek validation:
+
+```bash
+DEEPSEEK_API_KEY=... ./scripts/test_deepseek4_direct.sh
 ```
 
 ## License
