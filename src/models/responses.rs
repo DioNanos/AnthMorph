@@ -9,7 +9,7 @@ pub struct ResponsesRequest {
     #[serde(default)]
     pub input: Vec<Value>,
     #[serde(default)]
-    pub tools: Option<Vec<ResponseTool>>,
+    pub tools: Option<Vec<Value>>,
     #[serde(default)]
     pub tool_choice: Option<Value>,
     #[serde(default)]
@@ -19,17 +19,6 @@ pub struct ResponsesRequest {
     #[allow(dead_code)]
     #[serde(flatten)]
     pub extra: serde_json::Map<String, Value>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ResponseTool {
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub parameters: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]

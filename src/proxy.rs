@@ -146,8 +146,8 @@ fn responses_tool_name_map(
             .as_ref()
             .into_iter()
             .flatten()
-            .filter(|tool| tool.tool_type == "function")
-            .map(|tool| tool.name.as_str()),
+            .filter(|tool| tool.get("type").and_then(|v| v.as_str()) == Some("function"))
+            .filter_map(|tool| tool.get("name").and_then(|v| v.as_str())),
         profile,
     )
 }
@@ -908,17 +908,22 @@ fn responses_to_openai(
 
     let tools = req.tools.as_ref().map(|tools| {
         tools.iter()
-            .filter(|tool| tool.tool_type == "function")
-            .map(|tool| openai::Tool {
-                tool_type: "function".to_string(),
-                function: openai::Function {
-                    name: tool_name_map.to_backend(&tool.name),
-                    description: tool.description.clone(),
-                    parameters: tool
-                        .parameters
-                        .clone()
-                        .unwrap_or_else(|| json!({"type":"object","properties":{}})),
-                },
+            .filter(|tool| tool.get("type").and_then(|v| v.as_str()) == Some("function"))
+            .filter_map(|tool| {
+                let name = tool.get("name").and_then(|v| v.as_str())?;
+                let parameters = tool.get("parameters").cloned().or_else(|| tool.get("input_schema").cloned());
+                Some(openai::Tool {
+                    tool_type: "function".to_string(),
+                    function: openai::Function {
+                        name: tool_name_map.to_backend(name),
+                        description: tool
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string),
+                        parameters: parameters
+                            .unwrap_or_else(|| json!({"type":"object","properties":{}})),
+                    },
+                })
             })
             .collect::<Vec<_>>()
     });
