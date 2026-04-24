@@ -16,9 +16,27 @@ stream_chunk_timeout_secs = 30
 [profiles.deepseek4]
 backend = "deepseek"
 base_url = "https://api.deepseek.com"
+model = "deepseek-v4-pro[1m]"
+reasoning_model = "deepseek-v4-pro[1m]"
+api_key_env = "DEEPSEEK_API_KEY"
+deepseek_anthropic_backend = true
+strict_model = true
+
+[profiles.deepseek4-pro]
+backend = "deepseek"
+base_url = "https://api.deepseek.com"
 model = "deepseek-v4-pro"
 reasoning_model = "deepseek-v4-pro"
 api_key_env = "DEEPSEEK_API_KEY"
+strict_model = true
+
+[profiles.deepseek4-flash]
+backend = "deepseek"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+reasoning_model = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+strict_model = true
 
 [profiles.chutes]
 backend = "chutes"

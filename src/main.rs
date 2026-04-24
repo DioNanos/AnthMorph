@@ -89,6 +89,8 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Backend URL: {}", config.backend_url);
     tracing::info!("Backend Profile: {}", config.backend_profile.as_str());
     tracing::info!("Compat Mode: {}", config.compat_mode.as_str());
+    tracing::info!("DeepSeek Anthropic Backend: {}", config.deepseek_anthropic_backend);
+    tracing::info!("Strict Model: {}", config.strict_model);
     tracing::info!("Primary Model: {}", config.primary_model);
     if let Some(ref m) = config.reasoning_model {
         tracing::info!("Reasoning Model: {}", m);
@@ -208,11 +210,20 @@ async fn main() -> anyhow::Result<()> {
 async fn health_handler(
     Extension(config): Extension<Arc<Config>>,
 ) -> axum::Json<serde_json::Value> {
+    let model_status = if config.strict_model && config.primary_model.contains("[1m]") {
+        "strict_model_unconfirmed"
+    } else {
+        "ok"
+    };
     axum::Json(serde_json::json!({
-        "status": "ok",
+        "status": model_status,
         "backend_profile": config.backend_profile.as_str(),
         "compat_mode": config.compat_mode.as_str(),
         "resolved_model": config.primary_model,
+        "requested_model": config.primary_model,
+        "model_status": model_status,
+        "strict_model": config.strict_model,
+        "deepseek_anthropic_backend": config.deepseek_anthropic_backend,
         "port": config.port,
     }))
 }

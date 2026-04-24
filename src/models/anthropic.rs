@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 // Anthropic Request
 // ============================================================================
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -32,7 +32,7 @@ pub struct AnthropicRequest {
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinkingConfig {
     #[serde(rename = "type")]
     pub thinking_type: String,
@@ -40,13 +40,14 @@ pub struct ThinkingConfig {
     pub budget_tokens: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputConfig {
     #[serde(default)]
     pub effort: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum SystemPrompt {
     Single(String),
     Multiple(Vec<SystemMessage>),
@@ -89,13 +90,14 @@ pub struct SystemMessage {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
     pub content: MessageContent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
 pub enum MessageContent {
     Text(String),
     Blocks(Vec<ContentBlock>),
@@ -126,7 +128,7 @@ impl<'de> Deserialize<'de> for MessageContent {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ContentBlock {
     #[serde(rename = "text")]
@@ -168,13 +170,13 @@ pub enum ContentBlock {
     Other,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImageSource {
     pub media_type: String,
     pub data: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tool {
     pub name: String,
     pub description: Option<String>,
@@ -184,7 +186,7 @@ pub struct Tool {
     pub tool_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolResultContent {
     Text(String),

@@ -266,6 +266,153 @@ async fn store_reasoning_for_tool_calls(
     }
 }
 
+fn validate_strict_model_value(
+    value: &serde_json::Value,
+    requested_model: &str,
+    strict: bool,
+) -> ProxyResult<()> {
+    if !strict {
+        return Ok(());
+    }
+    let Some(returned_model) = value.get("model").and_then(|model| model.as_str()) else {
+        return Ok(());
+    };
+    if returned_model != requested_model {
+        return Err(ProxyError::Upstream(format!(
+            "strict model mismatch: requested {requested_model}, provider returned {returned_model}"
+        )));
+    }
+    Ok(())
+}
+
+fn remap_anthropic_request_for_backend(
+    req: &anthropic::AnthropicRequest,
+    tool_name_map: &ToolNameMap,
+    model: &str,
+) -> ProxyResult<serde_json::Value> {
+    let mut value = serde_json::to_value(req)?;
+    value["model"] = serde_json::Value::String(model.to_string());
+
+    if let Some(tools) = value.get_mut("tools").and_then(|tools| tools.as_array_mut()) {
+        for tool in tools {
+            if let Some(name) = tool.get_mut("name").and_then(|name| name.as_str()) {
+                tool["name"] = serde_json::Value::String(tool_name_map.to_backend(name));
+            }
+        }
+    }
+
+    if let Some(messages) = value.get_mut("messages").and_then(|messages| messages.as_array_mut()) {
+        for message in messages {
+            let Some(blocks) = message.get_mut("content").and_then(|content| content.as_array_mut()) else {
+                continue;
+            };
+            for block in blocks {
+                if block.get("type").and_then(|kind| kind.as_str()) == Some("tool_use") {
+                    if let Some(name) = block.get_mut("name").and_then(|name| name.as_str()) {
+                        block["name"] = serde_json::Value::String(tool_name_map.to_backend(name));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(value)
+}
+
+fn remap_anthropic_response_for_client(
+    value: &mut serde_json::Value,
+    tool_name_map: &ToolNameMap,
+) {
+    if let Some(content) = value.get_mut("content").and_then(|content| content.as_array_mut()) {
+        for block in content {
+            if block.get("type").and_then(|kind| kind.as_str()) == Some("tool_use") {
+                if let Some(name) = block.get_mut("name").and_then(|name| name.as_str()) {
+                    block["name"] = serde_json::Value::String(tool_name_map.to_client(name));
+                }
+            }
+        }
+    }
+}
+
+fn remap_anthropic_stream_event_for_client(
+    value: &mut serde_json::Value,
+    tool_name_map: &ToolNameMap,
+) {
+    if value.get("type").and_then(|kind| kind.as_str()) != Some("content_block_start") {
+        return;
+    }
+    let Some(block) = value.get_mut("content_block") else {
+        return;
+    };
+    if block.get("type").and_then(|kind| kind.as_str()) == Some("tool_use") {
+        if let Some(name) = block.get_mut("name").and_then(|name| name.as_str()) {
+            block["name"] = serde_json::Value::String(tool_name_map.to_client(name));
+        }
+    }
+}
+
+async fn handle_anthropic_backend(
+    config: Arc<Config>,
+    client: Client,
+    req: anthropic::AnthropicRequest,
+    backend_key: Option<String>,
+    tool_name_map: ToolNameMap,
+    model: String,
+) -> ProxyResult<Response> {
+    let payload = remap_anthropic_request_for_backend(&req, &tool_name_map, &model)?;
+    let url = config.anthropic_messages_url();
+    tracing::debug!("Sending Anthropic-format request to {}", url);
+
+    let mut req_builder = client
+        .post(&url)
+        .json(&payload)
+        .timeout(Duration::from_secs(300))
+        .header("anthropic-version", "2023-06-01");
+
+    if let Some(api_key) = &backend_key {
+        req_builder = req_builder.header("x-api-key", api_key);
+    }
+
+    let response = req_builder.send().await.map_err(|err| {
+        tracing::error!("Failed to send Anthropic-format request: {:?}", err);
+        ProxyError::Http(err)
+    })?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        tracing::error!("Anthropic-format upstream error ({}): {}", status, redact_secrets(&error_text));
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status, error_text
+        )));
+    }
+
+    if req.stream.unwrap_or(false) {
+        let stream = response.bytes_stream();
+        let sse_stream = create_anthropic_passthrough_stream(
+            stream,
+            model,
+            config.strict_model,
+            tool_name_map,
+            config.stream_chunk_timeout_secs,
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
+        headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+        headers.insert("Connection", HeaderValue::from_static("keep-alive"));
+        return Ok((headers, Body::from_stream(sse_stream)).into_response());
+    }
+
+    let mut value: serde_json::Value = response.json().await?;
+    validate_strict_model_value(&value, &model, config.strict_model)?;
+    remap_anthropic_response_for_client(&mut value, &tool_name_map);
+    Ok(Json(value).into_response())
+}
+
 pub async fn proxy_handler(
     headers: HeaderMap,
     Extension(config): Extension<Arc<Config>>,
@@ -329,6 +476,21 @@ pub async fn proxy_handler(
         model_cache::normalize_model(&mapped, &models_cache).await
     };
 
+    let client_key = extract_client_key(&headers);
+    let backend_key = resolve_backend_key(client_key.as_deref(), &config);
+
+    if config.backend_profile == BackendProfile::Deepseek && config.deepseek_anthropic_backend {
+        return handle_anthropic_backend(
+            config,
+            client,
+            req,
+            backend_key,
+            tool_name_map,
+            model,
+        )
+        .await;
+    }
+
     let openai_req =
         transform::anthropic_to_openai(
             req,
@@ -349,9 +511,6 @@ pub async fn proxy_handler(
     }
     apply_cached_reasoning_to_messages(&mut openai_req.messages, &reasoning_cache).await;
     validate_deepseek_request(config.backend_profile, &openai_req)?;
-
-    let client_key = extract_client_key(&headers);
-    let backend_key = resolve_backend_key(client_key.as_deref(), &config);
 
     if is_streaming {
         handle_streaming(config, client, openai_req, backend_key, tool_name_map, reasoning_cache)
@@ -426,6 +585,15 @@ pub async fn responses_handler(
         let mapped = map_model(&req.model, &config);
         model_cache::normalize_model(&mapped, &models_cache).await
     };
+
+    if config.backend_profile == BackendProfile::Deepseek
+        && config.deepseek_anthropic_backend
+        && model.contains("[1m]")
+    {
+        return Err(ProxyError::Upstream(
+            "deepseek-v4-pro[1m] is selected, but AnthMorph Responses -> DeepSeek Anthropic translation is not implemented yet; refusing to use chat/completions fallback".to_string(),
+        ));
+    }
 
     let openai_req = responses_to_openai(
         &req,
@@ -969,6 +1137,103 @@ fn create_sse_stream(
         }
         if has_sent_message_start && !has_sent_message_stop {
             yield Ok(Bytes::from(message_stop_sse()));
+        }
+    }
+}
+
+fn create_anthropic_passthrough_stream(
+    stream: impl Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    requested_model: String,
+    strict_model: bool,
+    tool_name_map: ToolNameMap,
+    chunk_timeout_secs: u64,
+) -> impl Stream<Item = Result<Bytes, std::io::Error>> + Send {
+    async_stream::stream! {
+        let mut buffer = String::new();
+        let mut raw_buffer: Vec<u8> = Vec::new();
+        let mut model_checked = false;
+        let chunk_timeout = Duration::from_secs(chunk_timeout_secs);
+
+        pin!(stream);
+
+        loop {
+            let chunk_result = tokio::time::timeout(chunk_timeout, stream.next());
+            match chunk_result.await {
+                Ok(Some(Ok(bytes))) => {
+                    raw_buffer.extend_from_slice(&bytes);
+                    loop {
+                        match std::str::from_utf8(&raw_buffer) {
+                            Ok(text) => {
+                                buffer.push_str(&text.replace("\r\n", "\n"));
+                                raw_buffer.clear();
+                                break;
+                            }
+                            Err(e) => {
+                                let valid_up_to = e.valid_up_to();
+                                if valid_up_to > 0 {
+                                    let partial = std::str::from_utf8(&raw_buffer[..valid_up_to]).unwrap();
+                                    buffer.push_str(&partial.replace("\r\n", "\n"));
+                                    raw_buffer = raw_buffer[valid_up_to..].to_vec();
+                                }
+                                if raw_buffer.is_empty() || valid_up_to == 0 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    while let Some(pos) = buffer.find("\n\n") {
+                        let event_block = buffer[..pos].to_string();
+                        buffer = buffer[pos + 2..].to_string();
+
+                        let Some(data) = extract_sse_data(&event_block) else {
+                            yield Ok(Bytes::from(format!("{event_block}\n\n")));
+                            continue;
+                        };
+
+                        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if !model_checked {
+                                if let Some(model) = value
+                                    .get("message")
+                                    .and_then(|message| message.get("model"))
+                                    .and_then(|model| model.as_str())
+                                    .or_else(|| value.get("model").and_then(|model| model.as_str()))
+                                {
+                                    model_checked = true;
+                                    if strict_model && model != requested_model {
+                                        yield Ok(Bytes::from(stream_error_sse(&format!(
+                                            "strict model mismatch: requested {}, provider returned {}",
+                                            requested_model, model
+                                        ))));
+                                        return;
+                                    }
+                                }
+                            }
+
+                            remap_anthropic_stream_event_for_client(&mut value, &tool_name_map);
+
+                            let event_name = event_block
+                                .lines()
+                                .find_map(|line| line.strip_prefix("event:").map(str::trim))
+                                .unwrap_or("message");
+                            yield Ok(Bytes::from(sse_event(event_name, &value)));
+                        } else {
+                            yield Ok(Bytes::from(format!("{event_block}\n\n")));
+                        }
+                    }
+                }
+                Ok(Some(Err(err))) => {
+                    tracing::error!("Anthropic passthrough stream error: {}", err);
+                    yield Ok(Bytes::from(stream_error_sse(&format!("Stream error: {}", err))));
+                    break;
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    tracing::warn!("Anthropic passthrough stream chunk timeout ({}s), closing stream", chunk_timeout_secs);
+                    yield Ok(Bytes::from(stream_error_sse("stream chunk timeout")));
+                    break;
+                }
+            }
         }
     }
 }
@@ -1527,6 +1792,8 @@ pub struct Config {
     pub port: u16,
     pub rate_limit_per_minute: Option<u32>,
     pub stream_chunk_timeout_secs: u64,
+    pub deepseek_anthropic_backend: bool,
+    pub strict_model: bool,
 }
 
 impl Config {
@@ -1581,6 +1848,8 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
+            deepseek_anthropic_backend: env_flag("ANTHMORPH_DEEPSEEK_ANTHROPIC_BACKEND"),
+            strict_model: env_flag("ANTHMORPH_STRICT_MODEL"),
         }
     }
 
@@ -1593,6 +1862,13 @@ impl Config {
 
     pub fn models_url(&self) -> String {
         format!("{}/models", self.backend_url.trim_end_matches('/'))
+    }
+
+    pub fn anthropic_messages_url(&self) -> String {
+        format!(
+            "{}/anthropic/v1/messages",
+            self.backend_url.trim_end_matches('/')
+        )
     }
 
     pub fn known_models(&self) -> Vec<String> {
@@ -1620,8 +1896,17 @@ impl fmt::Debug for Config {
             .field("port", &self.port)
             .field("rate_limit_per_minute", &self.rate_limit_per_minute)
             .field("stream_chunk_timeout_secs", &self.stream_chunk_timeout_secs)
+            .field("deepseek_anthropic_backend", &self.deepseek_anthropic_backend)
+            .field("strict_model", &self.strict_model)
             .finish()
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2116,6 +2401,8 @@ mod tests {
             port: 3000,
             rate_limit_per_minute: None,
             stream_chunk_timeout_secs: 30,
+            deepseek_anthropic_backend: false,
+            strict_model: false,
         };
 
         let mut bearer_headers = HeaderMap::new();
@@ -2147,6 +2434,8 @@ mod tests {
             port: 3000,
             rate_limit_per_minute: None,
             stream_chunk_timeout_secs: 30,
+            deepseek_anthropic_backend: false,
+            strict_model: false,
         };
 
         let headers = HeaderMap::new();
@@ -2168,6 +2457,8 @@ mod tests {
             port: 3000,
             rate_limit_per_minute: None,
             stream_chunk_timeout_secs: 30,
+            deepseek_anthropic_backend: false,
+            strict_model: false,
         };
 
         let app = Router::new().route("/health", get(|| async { StatusCode::OK }));
@@ -2297,6 +2588,8 @@ mod tests {
             port: 3108,
             rate_limit_per_minute: None,
             stream_chunk_timeout_secs: 30,
+            deepseek_anthropic_backend: false,
+            strict_model: false,
         };
 
         let resolved = resolve_backend_key(Some("anthmorph-local"), &config);
@@ -2317,6 +2610,8 @@ mod tests {
             port: 3000,
             rate_limit_per_minute: None,
             stream_chunk_timeout_secs: 30,
+            deepseek_anthropic_backend: false,
+            strict_model: false,
         };
         let result = build_cors_layer(&config);
         assert!(result.is_err());
