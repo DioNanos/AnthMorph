@@ -81,6 +81,12 @@ fn extract_client_key(headers: &HeaderMap) -> Option<String> {
 }
 
 fn resolve_backend_key(client_key: Option<&str>, config: &Config) -> Option<String> {
+    if let (Some(client), Some(ingress)) = (client_key, config.ingress_api_key.as_deref()) {
+        if client == ingress {
+            return config.api_key.clone();
+        }
+    }
+
     client_key
         .map(|s| s.to_string())
         .or_else(|| config.api_key.clone())
@@ -152,6 +158,75 @@ fn responses_tool_name_map(
     )
 }
 
+fn validate_deepseek_tool_name(name: &str, path: String) -> ProxyResult<()> {
+    if name.trim().is_empty() {
+        return Err(ProxyError::Upstream(format!(
+            "invalid DeepSeek tool payload: {path} is empty"
+        )));
+    }
+    if name.len() > 64 {
+        return Err(ProxyError::Upstream(format!(
+            "invalid DeepSeek tool payload: {path} exceeds 64 characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_deepseek_request(
+    profile: BackendProfile,
+    request: &openai::OpenAIRequest,
+) -> ProxyResult<()> {
+    if profile != BackendProfile::Deepseek {
+        return Ok(());
+    }
+
+    if let Some(tools) = &request.tools {
+        for (index, tool) in tools.iter().enumerate() {
+            if tool.tool_type != "function" {
+                return Err(ProxyError::Upstream(format!(
+                    "unsupported DeepSeek tool at index {index}: expected type=function"
+                )));
+            }
+            validate_deepseek_tool_name(
+                &tool.function.name,
+                format!("tools[{index}].function.name"),
+            )?;
+        }
+    }
+
+    if let Some(choice) = &request.tool_choice {
+        if let openai::ToolChoice::Object { function, .. } = choice {
+            validate_deepseek_tool_name(
+                &function.name,
+                "tool_choice.function.name".to_string(),
+            )?;
+        }
+    }
+
+    for (msg_index, message) in request.messages.iter().enumerate() {
+        if let Some(tool_calls) = &message.tool_calls {
+            for (tool_index, call) in tool_calls.iter().enumerate() {
+                validate_deepseek_tool_name(
+                    &call.function.name,
+                    format!("messages[{msg_index}].tool_calls[{tool_index}].function.name"),
+                )?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn models_response_json(models: &[model_cache::ModelInfo]) -> serde_json::Value {
+    json!({
+        "object": "list",
+        "data": models
+            .iter()
+            .map(|model| json!({"id": model.id, "object": "model", "owned_by": "anthmorph"}))
+            .collect::<Vec<_>>()
+    })
+}
+
 pub async fn proxy_handler(
     headers: HeaderMap,
     Extension(config): Extension<Arc<Config>>,
@@ -221,6 +296,7 @@ pub async fn proxy_handler(
             config.compat_mode,
             &tool_name_map,
         )?;
+    validate_deepseek_request(config.backend_profile, &openai_req)?;
 
     let client_key = extract_client_key(&headers);
     let backend_key = resolve_backend_key(client_key.as_deref(), &config);
@@ -295,6 +371,7 @@ pub async fn responses_handler(
         config.backend_profile,
         &tool_name_map,
     )?;
+    validate_deepseek_request(config.backend_profile, &openai_req)?;
 
     let client_key = extract_client_key(&headers);
     let backend_key = resolve_backend_key(client_key.as_deref(), &config);
@@ -311,6 +388,7 @@ pub async fn models_handler(
     headers: HeaderMap,
     Extension(config): Extension<Arc<Config>>,
     Extension(client): Extension<Client>,
+    Extension(models_cache): Extension<model_cache::Cache>,
 ) -> ProxyResult<Response> {
     let url = config.models_url();
     let mut req_builder = client.get(&url).timeout(Duration::from_secs(60));
@@ -326,11 +404,12 @@ pub async fn models_handler(
     let body = response.bytes().await.map_err(ProxyError::Http)?;
 
     if !status.is_success() {
-        return Err(ProxyError::Upstream(format!(
-            "Upstream returned {}: {}",
-            status,
-            String::from_utf8_lossy(&body)
-        )));
+        tracing::warn!(
+            "upstream models lookup failed ({}), serving local registry",
+            status
+        );
+        let fallback = model_cache::snapshot(&models_cache).await;
+        return Ok(Json(models_response_json(&fallback)).into_response());
     }
 
     let mut headers = HeaderMap::new();
@@ -1329,6 +1408,16 @@ impl Config {
     pub fn models_url(&self) -> String {
         format!("{}/models", self.backend_url.trim_end_matches('/'))
     }
+
+    pub fn known_models(&self) -> Vec<String> {
+        let mut models = vec![self.primary_model.clone()];
+        if let Some(reasoning_model) = &self.reasoning_model {
+            if !models.iter().any(|model| model == reasoning_model) {
+                models.push(reasoning_model.clone());
+            }
+        }
+        models
+    }
 }
 
 impl fmt::Debug for Config {
@@ -1960,6 +2049,68 @@ mod tests {
         let err = ProxyError::Upstream("429 rate limit exceeded".to_string());
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[test]
+    fn validate_deepseek_request_rejects_long_tool_names() {
+        let request = openai::OpenAIRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![],
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            stop: None,
+            stream: None,
+            tools: Some(vec![openai::Tool {
+                tool_type: "function".to_string(),
+                function: openai::Function {
+                    name: "mcp__memory__memory_read__aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                    description: None,
+                    parameters: json!({}),
+                },
+            }]),
+            tool_choice: None,
+        };
+
+        let err = validate_deepseek_request(BackendProfile::Deepseek, &request).unwrap_err();
+        assert!(err.to_string().contains("exceeds 64 characters"));
+    }
+
+    #[test]
+    fn models_response_json_emits_openai_list_shape() {
+        let payload = models_response_json(&[
+            model_cache::ModelInfo {
+                id: "deepseek-v4-pro".to_string(),
+            },
+            model_cache::ModelInfo {
+                id: "deepseek-v4-flash".to_string(),
+            },
+        ]);
+
+        assert_eq!(payload["object"], "list");
+        assert_eq!(payload["data"][0]["id"], "deepseek-v4-pro");
+        assert_eq!(payload["data"][1]["id"], "deepseek-v4-flash");
+    }
+
+    #[test]
+    fn resolve_backend_key_prefers_saved_key_for_ingress_token() {
+        let config = Config {
+            backend_url: "https://example.com".to_string(),
+            backend_profile: BackendProfile::Deepseek,
+            compat_mode: CompatMode::Compat,
+            primary_model: "deepseek-v4-pro".to_string(),
+            reasoning_model: None,
+            api_key: Some("backend-secret".to_string()),
+            ingress_api_key: Some("anthmorph-local".to_string()),
+            allow_origins: Vec::new(),
+            port: 3108,
+            rate_limit_per_minute: None,
+            stream_chunk_timeout_secs: 30,
+        };
+
+        let resolved = resolve_backend_key(Some("anthmorph-local"), &config);
+        assert_eq!(resolved.as_deref(), Some("backend-secret"));
     }
 
     #[test]

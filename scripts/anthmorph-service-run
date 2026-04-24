@@ -13,6 +13,7 @@ else
 fi
 PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
 BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
+SECRET_HELPER=$ROOT_DIR/scripts/anthmorph-secret
 if [ -x /opt/homebrew/bin/python3 ]; then
   PYTHON_BIN=/opt/homebrew/bin/python3
 else
@@ -45,6 +46,7 @@ emit("PRIMARY_MODEL", profile.get("model", "deepseek-v4-pro"))
 emit("REASONING_MODEL", profile.get("reasoning_model", profile.get("model", "")))
 emit("API_KEY_ENV", profile.get("api_key_env", ""))
 emit("API_KEY", profile.get("api_key", ""))
+emit("SECRET_REF", profile.get("secret_ref", ""))
 emit("INGRESS_API_KEY", server.get("ingress_api_key", ""))
 origins = server.get("allow_origins", [])
 if isinstance(origins, list):
@@ -57,6 +59,8 @@ PY
 
 if [ -n "${API_KEY:-}" ]; then
   resolved_api_key=$API_KEY
+elif [ -n "${SECRET_REF:-}" ]; then
+  resolved_api_key=$("$SECRET_HELPER" get "$SECRET_REF")
 elif [ -n "${API_KEY_ENV:-}" ]; then
   eval "resolved_api_key=\${$API_KEY_ENV-}"
 else

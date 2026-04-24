@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
         .build()?;
 
     let config = Arc::new(config);
-    let models_cache = model_cache::new_cache();
+    let models_cache = model_cache::new_cache(&config.known_models());
 
     let rate_limiter: Option<rate_limiter::SharedRateLimiter> = config
         .rate_limit_per_minute

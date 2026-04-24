@@ -11,16 +11,39 @@ pub struct ModelInfo {
 
 pub struct CacheState {
     cache: RwLock<Option<Vec<ModelInfo>>>,
+    seeded: Vec<ModelInfo>,
     consecutive_failures: AtomicU32,
 }
 
 pub type Cache = Arc<CacheState>;
 
-pub fn new_cache() -> Cache {
+pub fn new_cache(seeded_models: &[String]) -> Cache {
+    let seeded = dedupe_models(
+        seeded_models
+            .iter()
+            .filter(|model| !model.trim().is_empty())
+            .map(|model| ModelInfo { id: model.clone() })
+            .collect(),
+    );
     Arc::new(CacheState {
-        cache: RwLock::new(None),
+        cache: RwLock::new(if seeded.is_empty() {
+            None
+        } else {
+            Some(seeded.clone())
+        }),
+        seeded,
         consecutive_failures: AtomicU32::new(0),
     })
+}
+
+fn dedupe_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
+    let mut out = Vec::new();
+    for model in models {
+        if !out.iter().any(|existing: &ModelInfo| existing.id == model.id) {
+            out.push(model);
+        }
+    }
+    out
 }
 
 pub async fn refresh(client: &Client, models_url: &str, state: &Cache) {
@@ -43,8 +66,16 @@ pub async fn refresh(client: &Client, models_url: &str, state: &Cache) {
 
     match result {
         Ok(models) => {
-            tracing::debug!("Model cache refreshed: {} models", models.len());
-            *state.cache.write().await = Some(models);
+            let merged = dedupe_models(
+                state
+                    .seeded
+                    .iter()
+                    .cloned()
+                    .chain(models.into_iter())
+                    .collect(),
+            );
+            tracing::debug!("Model cache refreshed: {} models", merged.len());
+            *state.cache.write().await = Some(merged);
             state.consecutive_failures.store(0, Ordering::Relaxed);
         }
         Err(e) => {
@@ -57,6 +88,16 @@ pub async fn refresh(client: &Client, models_url: &str, state: &Cache) {
             }
         }
     }
+}
+
+pub async fn snapshot(state: &Cache) -> Vec<ModelInfo> {
+    state
+        .cache
+        .read()
+        .await
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|| state.seeded.clone())
 }
 
 pub async fn normalize_model(model: &str, state: &Cache) -> String {

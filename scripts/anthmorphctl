@@ -17,6 +17,7 @@ PID_FILE=$STATE_DIR/anthmorph.pid
 LOG_FILE=$STATE_DIR/anthmorph.log
 PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
 BIN_PATH_DEFAULT=${PREBUILT_BIN:-$ROOT_DIR/target/release/anthmorph}
+SECRET_HELPER=$ROOT_DIR/scripts/anthmorph-secret
 if [ -x /opt/homebrew/bin/python3 ]; then
   PYTHON_BIN=/opt/homebrew/bin/python3
 else
@@ -34,8 +35,14 @@ usage:
   anthmorphctl config bootstrap
   anthmorphctl config show
   anthmorphctl init deepseek4|chutes [options]
+  anthmorphctl wizard [PROFILE]
+  anthmorphctl doctor [PROFILE]
   anthmorphctl profile list
   anthmorphctl profile use NAME
+  anthmorphctl key set PROFILE
+  anthmorphctl key test PROFILE
+  anthmorphctl key delete PROFILE
+  anthmorphctl key list
   anthmorphctl set key-env ENV_NAME
   anthmorphctl set key VALUE --save
   anthmorphctl unset key
@@ -98,6 +105,7 @@ INGRESS_API_KEY=${INGRESS_API_KEY:-}
 ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
 API_KEY_ENV=${API_KEY_ENV:-}
 API_KEY=${API_KEY:-}
+SECRET_REF=${SECRET_REF:-}
 BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
 ACTIVE_PROFILE=${ACTIVE_PROFILE:-}
 EOF
@@ -130,6 +138,7 @@ emit("PRIMARY_MODEL", profile.get("model", "deepseek-v4-pro"))
 emit("REASONING_MODEL", profile.get("reasoning_model", profile.get("model", "")))
 emit("API_KEY_ENV", profile.get("api_key_env", ""))
 emit("API_KEY", profile.get("api_key", ""))
+emit("SECRET_REF", profile.get("secret_ref", ""))
 emit("PORT", server.get("port", 3108))
 emit("COMPAT_MODE", server.get("compat_mode", "compat"))
 emit("INGRESS_API_KEY", server.get("ingress_api_key", ""))
@@ -165,6 +174,7 @@ save_config_values() {
   REASONING_MODEL="${REASONING_MODEL:-}" \
   API_KEY_ENV="${API_KEY_ENV:-}" \
   API_KEY="${API_KEY:-}" \
+  SECRET_REF="${SECRET_REF:-}" \
   "$PYTHON_BIN" - <<'PY'
 import os
 import sys
@@ -213,8 +223,14 @@ else:
 if os.environ.get("API_KEY_ENV"):
     profile["api_key_env"] = os.environ["API_KEY_ENV"]
     profile.pop("api_key", None)
+    profile.pop("secret_ref", None)
 elif os.environ.get("API_KEY"):
     profile["api_key"] = os.environ["API_KEY"]
+    profile.pop("api_key_env", None)
+    profile.pop("secret_ref", None)
+elif os.environ.get("SECRET_REF"):
+    profile["secret_ref"] = os.environ["SECRET_REF"]
+    profile.pop("api_key", None)
     profile.pop("api_key_env", None)
 
 def format_value(value, indent=0):
@@ -261,6 +277,10 @@ resolve_api_key() {
     printf '%s' "$API_KEY"
     return 0
   fi
+  if [ -n "${SECRET_REF:-}" ]; then
+    "$SECRET_HELPER" get "$SECRET_REF"
+    return 0
+  fi
   if [ -n "${API_KEY_ENV:-}" ]; then
     eval "resolved=\${$API_KEY_ENV-}"
     if [ -n "${resolved:-}" ]; then
@@ -269,6 +289,30 @@ resolve_api_key() {
     fi
   fi
   return 1
+}
+
+secret_ref_default() {
+  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  if [ "$(uname -s)" = "Darwin" ]; then
+    printf 'keychain:%s' "$profile_name"
+  else
+    printf 'vault:%s' "$profile_name"
+  fi
+}
+
+read_hidden_value() {
+  prompt=${1:-"Value: "}
+  if [ ! -t 0 ]; then
+    IFS= read -r value
+    printf '%s' "$value"
+    return 0
+  fi
+  printf '%s' "$prompt" >&2
+  stty -echo
+  IFS= read -r value
+  stty echo
+  printf '\n' >&2
+  printf '%s' "$value"
 }
 
 health_on_port() {
@@ -521,6 +565,121 @@ PY
   fi
 }
 
+key_set_cmd() {
+  ensure_config
+  load_config
+  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  CONFIG_FILE="$CONFIG_FILE" PROFILE_NAME="$profile_name" "$PYTHON_BIN" - <<'PY'
+import os, sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(os.environ["CONFIG_FILE"]).read_text())
+if os.environ["PROFILE_NAME"] not in data.get("profiles", {}):
+    print(f"unknown profile: {os.environ['PROFILE_NAME']}", file=sys.stderr)
+    sys.exit(1)
+PY
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+    load_config
+  fi
+  ACTIVE_PROFILE=$profile_name
+  SECRET_REF=${SECRET_REF:-$(secret_ref_default "$profile_name")}
+  secret_value=$(read_hidden_value "API key for ${profile_name}: ")
+  [ -n "$secret_value" ] || { echo "empty key" >&2; exit 1; }
+  "$SECRET_HELPER" set "$SECRET_REF" "$secret_value"
+  API_KEY=
+  API_KEY_ENV=
+  save_config_values
+  echo "stored secret for $profile_name via $SECRET_REF"
+}
+
+key_test_cmd() {
+  load_config
+  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+    load_config
+  fi
+  api_key=$(resolve_api_key || true)
+  [ -n "$api_key" ] || { echo "missing key for $profile_name" >&2; exit 1; }
+  status=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $api_key" \
+    "${BACKEND_URL%/}/models")
+  if [ "$status" = "200" ]; then
+    echo "key ok for $profile_name"
+  else
+    echo "key test failed for $profile_name: HTTP $status" >&2
+    exit 1
+  fi
+}
+
+key_delete_cmd() {
+  load_config
+  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+    load_config
+  fi
+  ref=${SECRET_REF:-$(secret_ref_default "$profile_name")}
+  "$SECRET_HELPER" delete "$ref"
+  API_KEY=
+  API_KEY_ENV=
+  SECRET_REF=
+  save_config_values
+  echo "deleted secret for $profile_name"
+}
+
+key_list_cmd() {
+  ensure_config
+  CONFIG_FILE="$CONFIG_FILE" "$PYTHON_BIN" - <<'PY'
+import os, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(os.environ["CONFIG_FILE"]).read_text())
+active = data.get("runtime", {}).get("active_profile", "")
+for name, profile in data.get("profiles", {}).items():
+    marker = "*" if name == active else " "
+    source = "missing"
+    if profile.get("secret_ref"):
+        source = profile["secret_ref"]
+    elif profile.get("api_key_env"):
+        source = f"env:{profile['api_key_env']}"
+    elif profile.get("api_key"):
+        source = "plaintext"
+    print(f"{marker} {name}\t{source}")
+PY
+}
+
+wizard_cmd() {
+  profile_name=${1:-deepseek4}
+  init_cmd "$profile_name"
+  key_set_cmd "$profile_name"
+  key_test_cmd "$profile_name"
+  service_install_cmd >/dev/null 2>&1 || true
+  service_restart_cmd >/dev/null 2>&1 || true
+  echo "wizard completed for $profile_name"
+}
+
+doctor_cmd() {
+  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+  fi
+  load_config
+  echo "config: ok ($CONFIG_FILE)"
+  api_key=$(resolve_api_key || true)
+  if [ -z "$api_key" ]; then
+    echo "secret: missing" >&2
+    exit 1
+  fi
+  echo "secret: ok"
+  status=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $api_key" \
+    "${BACKEND_URL%/}/models")
+  echo "deepseek_models_http: $status"
+  health=$(health_on_port "$PORT" || true)
+  echo "local_health: ${health:-unreachable}"
+  curl -fsS "http://127.0.0.1:${PORT}/v1/models" >/dev/null && echo "local_models: ok" || echo "local_models: failed"
+}
+
 set_cmd() {
   load_config
   field=${1:-}
@@ -576,7 +735,7 @@ start_cmd() {
   ensure_bin_ready || exit 1
   api_key=$(resolve_api_key || true)
   if [ -z "$api_key" ]; then
-    echo "missing API key: configure API_KEY_ENV or save an API key" >&2
+    echo "missing API key: configure key-env, secret_ref, or save an API key" >&2
     exit 1
   fi
   export PORT ANTHMORPH_BACKEND_PROFILE=$BACKEND_PROFILE ANTHMORPH_COMPAT_MODE=$COMPAT_MODE
@@ -644,6 +803,8 @@ status_cmd() {
   echo "port: ${PORT:-}"
   if [ -n "${API_KEY_ENV:-}" ]; then
     echo "key_source: env:$API_KEY_ENV"
+  elif [ -n "${SECRET_REF:-}" ]; then
+    echo "key_source: $SECRET_REF"
   elif [ -n "${API_KEY:-}" ]; then
     echo "key_source: saved"
   else
@@ -663,7 +824,7 @@ logs_cmd() {
 
 print_config_cmd() {
   ensure_config
-  sed 's/api_key = .*/api_key = "<hidden>"/' "$CONFIG_FILE"
+  sed -e 's/api_key = .*/api_key = "<hidden>"/' -e 's/ingress_api_key = .*/ingress_api_key = "<hidden>"/' "$CONFIG_FILE"
 }
 
 service_install_cmd() {
@@ -777,12 +938,30 @@ case "$cmd" in
     shift
     init_cmd "$@"
     ;;
+  wizard)
+    shift
+    wizard_cmd "$@"
+    ;;
+  doctor)
+    shift
+    doctor_cmd "$@"
+    ;;
   profile)
     sub=${2:-}
     case "$sub" in
       list) profile_list_cmd ;;
       use) shift 2; profile_use_cmd "$@" ;;
       *) echo "unknown profile subcommand: $sub" >&2; exit 1 ;;
+    esac
+    ;;
+  key)
+    sub=${2:-}
+    case "$sub" in
+      set) shift 2; key_set_cmd "$@" ;;
+      test) shift 2; key_test_cmd "$@" ;;
+      delete) shift 2; key_delete_cmd "$@" ;;
+      list) key_list_cmd ;;
+      *) echo "unknown key subcommand: $sub" >&2; exit 1 ;;
     esac
     ;;
   set)

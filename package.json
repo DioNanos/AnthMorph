@@ -11,6 +11,7 @@
   "files": [
     "bin/",
     "prebuilt/",
+    "scripts/anthmorph-secret",
     "scripts/anthmorphctl",
     "scripts/anthmorph-service-run",
     "scripts/write_default_config.py",
