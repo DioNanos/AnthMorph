@@ -3,32 +3,31 @@
 [![Status](https://img.shields.io/badge/Status-0.1.5-blue.svg)](#project-status)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
-[![Target](https://img.shields.io/badge/Target-Termux%20%2F%20Linux-green.svg)](https://termux.dev)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
 
-AnthMorph is a universal Rust proxy for Anthropic `/v1/messages` and OpenAI `/v1/responses`.
-It lets Claude-style clients and Codex-style clients talk to DeepSeek, Chutes, or other OpenAI-compatible backends through a profile-aware translation layer.
+AnthMorph is a local agent router for Claude-style and Codex-style clients.
+It exposes Anthropic `/v1/messages` and OpenAI `/v1/responses`, then adapts requests to provider APIs with tool-name normalization, model profiles, local secrets, and service management.
+
+The current focus is **DeepSeek V4 support**, especially `deepseek-v4-pro[1m]` for agentic Claude/Codex workflows. AnthMorph treats that profile strictly: if the provider returns a different model, the proxy reports the mismatch instead of silently downgrading.
 
 ## Project Status
 
 - Current line: `0.1.5`
-- Primary target: `deepseek-v4-pro` through AnthMorph
-- Secondary targets: `chutes.ai` and generic OpenAI-compatible endpoints
-- Release model: MIT-licensed GitHub repo plus public npm package
-- Packaging model: one npm package with Termux prebuilt and Linux source-build path
+- Primary target: DeepSeek V4 Pro / `deepseek-v4-pro[1m]`
+- Secondary targets: `deepseek-v4-pro`, `deepseek-v4-flash`, `chutes.ai`, and generic OpenAI-compatible backends
+- Public package: `@mmmbuto/anthmorph`
+- Runtime model: local daemon or foreground proxy configured from `~/.config/anthmorph/config.toml`
 
 ## Highlights
 
-- Anthropic `/v1/messages` ingress for Claude-style clients
-- OpenAI `/v1/responses` ingress for Codex/codex-vl
-- `deepseek`, `chutes`, and `openai_generic` backend profiles
-- `strict` and `compat` runtime modes
-- long MCP tool-name normalization for DeepSeek's 64-char function-name limit
-- Claude Code bootstrap via `anthmorphctl bootstrap claude-code`
-- Codex bootstrap snippet via `anthmorphctl bootstrap codex`
-- real-backend validation for Chutes, MiniMax, and Alibaba rejection flow
-- direct DeepSeek validation script for `/models`, `/chat/completions`, and negative `/v1/responses`
-- Docker release checks for secret scan, Rust tests, Linux build, and npm dry-runs
+- Anthropic `/v1/messages` ingress for Claude Code and Claude-style clients
+- OpenAI `/v1/responses` ingress for Codex and codex-vl style clients
+- DeepSeek profiles for `deepseek-v4-pro[1m]`, normal Pro, and Flash
+- Strict model validation to catch provider-side fallback or remapping
+- Long MCP tool-name normalization for DeepSeek's 64-character function-name limit
+- Local secret handling through env vars, macOS Keychain, or fallback vault helpers
+- `anthmorphctl` for config bootstrap, profile selection, service install, health, and model probes
+- Chutes and generic OpenAI-compatible backends remain supported as explicit profiles
 
 ## Install
 
@@ -50,31 +49,48 @@ Linux Docker build:
 ./scripts/docker_build_linux.sh
 ```
 
-## Quickstart
+## Quickstart: DeepSeek V4
 
-Initialize the canonical config and pick DeepSeek:
+Create the canonical config and initialize DeepSeek:
 
 ```bash
 anthmorphctl config bootstrap
-anthmorphctl profile list
 anthmorphctl init deepseek4 --port 3108 --compat-mode compat
-anthmorphctl start
+anthmorphctl key set deepseek4
+anthmorphctl key test deepseek4
+```
+
+Start AnthMorph:
+
+```bash
+anthmorphctl service install
+anthmorphctl service restart
 anthmorphctl status
 ```
 
-Canonical config lives in:
+Probe the selected DeepSeek model:
+
+```bash
+anthmorphctl model probe deepseek4
+```
+
+The default DeepSeek profile requests `deepseek-v4-pro[1m]` in strict mode. If DeepSeek returns `deepseek-v4-flash` or any other model, AnthMorph reports the mismatch.
+
+Canonical config:
 
 ```bash
 ~/.config/anthmorph/config.toml
 ```
 
-Local dev fallback remains:
+Local dev fallback:
 
 ```bash
 ./.anthmorph/config.toml
 ```
 
-Point Claude Code at AnthMorph:
+## Client Bootstrap
+
+Generate Claude Code settings:
 
 ```bash
 anthmorphctl bootstrap claude-code --write
@@ -86,44 +102,24 @@ Generate a Codex provider snippet:
 anthmorphctl bootstrap codex
 ```
 
-Stop the proxy:
+AnthMorph exposes:
 
-```bash
-anthmorphctl stop
+```text
+http://127.0.0.1:3108/v1/messages
+http://127.0.0.1:3108/v1/responses
+http://127.0.0.1:3108/v1/models
+http://127.0.0.1:3108/health
 ```
 
-## Docs
+## DeepSeek Notes
 
-- Claude Code setup: [docs/CLAUDE_CODE_SETUP.md](docs/CLAUDE_CODE_SETUP.md)
-- Packaging details: [docs/PACKAGING.md](docs/PACKAGING.md)
-- Release guide: [docs/RELEASE.md](docs/RELEASE.md)
-- Changelog: [CHANGELOG.md](CHANGELOG.md)
+DeepSeek currently exposes `deepseek-v4-pro` and `deepseek-v4-flash` through its OpenAI-compatible model list. Its Claude Code guide also documents `deepseek-v4-pro[1m]` for Anthropic-compatible usage.
 
-## Packaging Notes
+AnthMorph handles this by making `deepseek-v4-pro[1m]` a strict profile:
 
-- Termux on Android/aarch64 uses the bundled prebuilt in `prebuilt/anthmorph`
-- Linux and macOS build from source during install
-- Docker is the supported reproducible release path on VPS3 and similar hosts
-- If Cargo is unavailable on Linux/macOS, use the Docker build path documented in `docs/PACKAGING.md`
-
-## Service Install
-
-For local operator use, build and run AnthMorph through `anthmorphctl`:
-
-```bash
-cargo build --release
-anthmorphctl init deepseek4 --port 3108 --compat-mode compat
-anthmorphctl start
-```
-
-`anthmorphctl` now exports runtime configuration through environment variables before launch, so backend secrets do not appear in process arguments.
-
-For a persistent user service:
-
-```bash
-anthmorphctl service install
-anthmorphctl service status
-```
+- Claude-style requests can use the DeepSeek Anthropic lane.
+- Codex-style `/v1/responses` requests do not silently fall back to `/chat/completions` when `[1m]` is selected.
+- If the provider remaps `[1m]` to Flash, AnthMorph returns a clear model mismatch error.
 
 ## Validation
 
@@ -139,18 +135,24 @@ Docker release checks:
 ./scripts/docker_release_checks.sh
 ```
 
-Real payload replay:
-
-```bash
-./scripts/test_claude_code_patterns_real.sh chutes
-./scripts/test_claude_code_patterns_real.sh minimax
-```
-
 Direct DeepSeek validation:
 
 ```bash
 DEEPSEEK_API_KEY=... ./scripts/test_deepseek4_direct.sh
 ```
+
+Real Claude Code payload replay:
+
+```bash
+./scripts/test_claude_code_patterns_real.sh chutes
+```
+
+## Docs
+
+- Claude Code setup: [docs/CLAUDE_CODE_SETUP.md](docs/CLAUDE_CODE_SETUP.md)
+- Packaging details: [docs/PACKAGING.md](docs/PACKAGING.md)
+- Release guide: [docs/RELEASE.md](docs/RELEASE.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## License
 

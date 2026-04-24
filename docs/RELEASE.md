@@ -5,7 +5,7 @@ This guide prepares AnthMorph for GitHub push/release and npm publish without em
 ## Preconditions
 
 - release auth for GitHub and npm is already configured on the release machine
-- git remotes are configured with `origin` = GitHub and `develop` = VPS3 bare repo
+- git remote `origin` points to the public release repository
 - npm login is already configured externally
 - Docker is available on the release machine
 
@@ -47,8 +47,6 @@ git commit -m "Release v0.1.5"
 git tag -a v0.1.5 -m "Release v0.1.5"
 git push origin main
 git push origin v0.1.5
-git push develop main
-git push develop v0.1.5
 ```
 
 ## GitHub release notes

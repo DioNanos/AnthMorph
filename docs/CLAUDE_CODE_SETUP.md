@@ -2,7 +2,7 @@
 
 This guide connects Claude Code to a local AnthMorph instance.
 
-## Quick path
+## DeepSeek V4 Path
 
 1. Install AnthMorph.
 
@@ -10,17 +10,20 @@ This guide connects Claude Code to a local AnthMorph instance.
 npm install -g @mmmbuto/anthmorph
 ```
 
-2. Initialize a backend profile.
+2. Initialize the DeepSeek V4 profile.
 
 ```bash
-export CHUTES_API_KEY=your_key_here
-anthmorphctl init chutes --port 3107
+anthmorphctl config bootstrap
+anthmorphctl init deepseek4 --port 3108 --compat-mode compat
+anthmorphctl key set deepseek4
+anthmorphctl key test deepseek4
 ```
 
-3. Start the proxy.
+3. Install or restart the local service.
 
 ```bash
-anthmorphctl start
+anthmorphctl service install
+anthmorphctl service restart
 anthmorphctl status
 ```
 
@@ -38,41 +41,41 @@ Write `~/.claude/settings.json` directly:
 anthmorphctl bootstrap claude-code --write
 ```
 
-## What AnthMorph writes
+## What AnthMorph Writes
 
 The bootstrap command prepares Claude Code with:
 
 - `ANTHROPIC_BASE_URL=http://127.0.0.1:$PORT`
-- `ANTHROPIC_AUTH_TOKEN` from `INGRESS_API_KEY` if configured, otherwise `anthmorph-local`
-- all Claude Code default model variables pointed at `PRIMARY_MODEL`
+- `ANTHROPIC_AUTH_TOKEN` from `INGRESS_API_KEY` if configured, otherwise the local bootstrap token
+- Claude Code model variables pointed at the active AnthMorph profile
 - `API_TIMEOUT_MS=6000000`
 
-## Recommended runtime mode
+## Model Probe
 
-For Claude Code CLI usage, prefer `compat` mode.
-
-Example:
+Check the provider-returned model before relying on a profile:
 
 ```bash
-anthmorphctl init chutes --compat-mode compat
+anthmorphctl model probe deepseek4
 ```
 
-## Notes by backend
+The default `deepseek4` profile requests `deepseek-v4-pro[1m]` and enables strict validation. If DeepSeek returns a different model, AnthMorph reports the mismatch instead of silently downgrading.
 
-- `chutes`: preserves Chutes-specific strengths like `top_k` and reasoning-aware routing
-- `openai_generic`: accepts Claude Code request shapes conservatively and suppresses backend-native reasoning noise by default
+## Notes By Backend
+
+- `deepseek`: primary DeepSeek V4 backend with tool-name normalization and strict model checks
+- `chutes`: OpenAI-compatible fallback profile for supported hosted models
+- `openai_generic`: conservative generic compatibility profile
 
 ## Verification
 
 Basic health check:
 
 ```bash
-curl -fsS http://127.0.0.1:3107/health
+curl -fsS http://127.0.0.1:3108/health
 ```
 
 Real Claude Code payload replay:
 
 ```bash
 ./scripts/test_claude_code_patterns_real.sh chutes
-./scripts/test_claude_code_patterns_real.sh minimax
 ```
