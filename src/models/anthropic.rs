@@ -182,7 +182,7 @@ pub struct Tool {
     pub description: Option<String>,
     #[serde(rename = "input_schema")]
     pub input_schema: serde_json::Value,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub tool_type: Option<String>,
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@mmmbuto/anthmorph",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Universal Anthropic and Responses proxy for DeepSeek, Chutes, and OpenAI-compatible backends",
   "license": "MIT",
   "author": "Davide A. Guglielmi",

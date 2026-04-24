@@ -8,6 +8,9 @@ pub enum ProxyError {
     #[error("Upstream error: {0}")]
     Upstream(String),
 
+    #[error("{0}")]
+    InvalidRequest(String),
+
     #[error("Transform error: {0}")]
     Transform(String),
 
@@ -39,6 +42,7 @@ impl axum::response::IntoResponse for ProxyError {
                     (StatusCode::BAD_GATEWAY, "api_error")
                 }
             }
+            ProxyError::InvalidRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request_error"),
             ProxyError::Transform(_) => (StatusCode::BAD_REQUEST, "invalid_request_error"),
             ProxyError::Serialization(_) => (StatusCode::BAD_REQUEST, "invalid_request_error"),
             ProxyError::Io(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),

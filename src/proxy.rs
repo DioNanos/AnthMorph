@@ -278,7 +278,7 @@ fn validate_strict_model_value(
         return Ok(());
     };
     if returned_model != requested_model {
-        return Err(ProxyError::Upstream(format!(
+        return Err(ProxyError::InvalidRequest(format!(
             "strict model mismatch: requested {requested_model}, provider returned {returned_model}"
         )));
     }
@@ -292,6 +292,10 @@ fn remap_anthropic_request_for_backend(
 ) -> ProxyResult<serde_json::Value> {
     let mut value = serde_json::to_value(req)?;
     value["model"] = serde_json::Value::String(model.to_string());
+
+    if let Some(system) = value.get_mut("system") {
+        normalize_anthropic_system_for_deepseek(system);
+    }
 
     if let Some(tools) = value.get_mut("tools").and_then(|tools| tools.as_array_mut()) {
         for tool in tools {
@@ -317,6 +321,36 @@ fn remap_anthropic_request_for_backend(
     }
 
     Ok(value)
+}
+
+fn normalize_anthropic_system_for_deepseek(system: &mut serde_json::Value) {
+    match system {
+        serde_json::Value::String(text) => {
+            *system = json!([{"type": "text", "text": text.clone()}]);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                if let Some(obj) = item.as_object_mut() {
+                    obj.entry("type").or_insert_with(|| json!("text"));
+                }
+            }
+        }
+        serde_json::Value::Object(obj) => {
+            if let Some(text) = obj.get("text").cloned() {
+                *system = json!([{"type": "text", "text": text}]);
+            } else if let Some(text) = obj.get("Single").cloned() {
+                *system = json!([{"type": "text", "text": text}]);
+            } else if let Some(items) = obj.get_mut("Multiple").and_then(|value| value.as_array_mut()) {
+                for item in items {
+                    if let Some(obj) = item.as_object_mut() {
+                        obj.entry("type").or_insert_with(|| json!("text"));
+                    }
+                }
+                *system = obj.remove("Multiple").unwrap_or_else(|| json!([]));
+            }
+        }
+        _ => {}
+    }
 }
 
 fn remap_anthropic_response_for_client(
@@ -361,7 +395,7 @@ async fn handle_anthropic_backend(
 ) -> ProxyResult<Response> {
     let payload = remap_anthropic_request_for_backend(&req, &tool_name_map, &model)?;
     let url = config.anthropic_messages_url();
-    tracing::debug!("Sending Anthropic-format request to {}", url);
+    tracing::debug!("Sending Anthropic-format request to {} with model {}", url, model);
 
     let mut req_builder = client
         .post(&url)
@@ -466,7 +500,11 @@ pub async fn proxy_handler(
     let tool_name_map = anthropic_tool_name_map(&req, config.backend_profile);
     let wants_thinking = request_has_thinking(&req);
 
-    let model = if wants_thinking {
+    let model = if config.backend_profile == BackendProfile::Deepseek
+        && config.deepseek_anthropic_backend
+    {
+        config.primary_model.clone()
+    } else if wants_thinking {
         config
             .reasoning_model
             .clone()
@@ -576,7 +614,11 @@ pub async fn responses_handler(
 
     let tool_name_map = responses_tool_name_map(&req, config.backend_profile);
     let wants_stream = req.stream.unwrap_or(false);
-    let model = if responses_request_has_reasoning(&req) {
+    let model = if config.backend_profile == BackendProfile::Deepseek
+        && config.deepseek_anthropic_backend
+    {
+        config.primary_model.clone()
+    } else if responses_request_has_reasoning(&req) {
         config
             .reasoning_model
             .clone()
@@ -1201,7 +1243,7 @@ fn create_anthropic_passthrough_stream(
                                 {
                                     model_checked = true;
                                     if strict_model && model != requested_model {
-                                        yield Ok(Bytes::from(stream_error_sse(&format!(
+                                        yield Ok(Bytes::from(stream_invalid_request_sse(&format!(
                                             "strict model mismatch: requested {}, provider returned {}",
                                             requested_model, model
                                         ))));
@@ -2133,10 +2175,18 @@ fn message_stop_sse() -> String {
 }
 
 fn stream_error_sse(message: &str) -> String {
+    stream_error_sse_with_type("stream_error", message)
+}
+
+fn stream_invalid_request_sse(message: &str) -> String {
+    stream_error_sse_with_type("invalid_request_error", message)
+}
+
+fn stream_error_sse_with_type(error_type: &str, message: &str) -> String {
     let event = json!({
         "type": "error",
         "error": {
-            "type": "stream_error",
+            "type": error_type,
             "message": message,
         }
     });
@@ -2532,6 +2582,15 @@ mod tests {
     }
 
     #[test]
+    fn invalid_request_error_returns_400_format() {
+        use crate::error::ProxyError;
+        use axum::response::IntoResponse;
+        let err = ProxyError::InvalidRequest("strict model mismatch".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
     fn validate_deepseek_request_rejects_long_tool_names() {
         let request = openai::OpenAIRequest {
             model: "deepseek-v4-pro".to_string(),
@@ -2556,6 +2615,55 @@ mod tests {
 
         let err = validate_deepseek_request(BackendProfile::Deepseek, &request).unwrap_err();
         assert!(err.to_string().contains("exceeds 64 characters"));
+    }
+
+    #[test]
+    fn normalizes_string_system_for_deepseek_anthropic() {
+        let mut system = json!("Return only OK.");
+        normalize_anthropic_system_for_deepseek(&mut system);
+        assert_eq!(system, json!([{"type": "text", "text": "Return only OK."}]));
+    }
+
+    #[test]
+    fn normalizes_untyped_system_blocks_for_deepseek_anthropic() {
+        let mut system = json!([{"text": "one"}, {"type": "text", "text": "two"}]);
+        normalize_anthropic_system_for_deepseek(&mut system);
+        assert_eq!(
+            system,
+            json!([{"type": "text", "text": "one"}, {"type": "text", "text": "two"}])
+        );
+    }
+
+    #[test]
+    fn omits_null_tool_type_for_deepseek_anthropic() {
+        let request = anthropic::AnthropicRequest {
+            model: "deepseek-v4-pro[1m]".to_string(),
+            messages: vec![anthropic::Message {
+                role: "user".to_string(),
+                content: anthropic::MessageContent::Text("call the tool".to_string()),
+            }],
+            system: None,
+            stream: None,
+            max_tokens: 16,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            tools: Some(vec![anthropic::Tool {
+                name: "tool".to_string(),
+                description: None,
+                input_schema: json!({"type": "object"}),
+                tool_type: None,
+            }]),
+            thinking: None,
+            output_config: None,
+            stop_sequences: None,
+            extra: serde_json::Map::new(),
+        };
+
+        let payload =
+            remap_anthropic_request_for_backend(&request, &ToolNameMap::identity(), &request.model)
+                .unwrap();
+        assert!(payload["tools"][0].get("type").is_none());
     }
 
     #[test]
