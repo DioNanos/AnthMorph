@@ -5,8 +5,10 @@
 //! the raw text output after generation.
 
 pub mod deepseek;
-
-use crate::error::ProxyResult;
+pub mod glm47;
+pub mod kimi;
+pub mod mistral;
+pub mod qwen;
 
 /// Information extracted from model output about tool calls.
 #[derive(Debug, Clone, Default)]
@@ -40,7 +42,6 @@ pub trait ToolParser: Send + Sync {
         _current_text: &str,
         _delta_text: &str,
     ) -> Option<ExtractedStreamingDelta> {
-        // Default: no streaming support
         Some(ExtractedStreamingDelta {
             content: Some(_delta_text.to_string()),
             tool_calls: Vec::new(),
