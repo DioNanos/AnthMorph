@@ -89,15 +89,17 @@ Nuovo modulo: `src/tool_parsers.rs` con:
 ### Fase 4 — Responses API v2 SSE Events
 **Obiettivo**: Streaming eventi strutturati per `/v1/responses`
 
-- `responses_events.rs` con modelli strict
-- Eventi: `response.created`, `response.output_item.added`, `response.output_text.delta`, ecc.
-- 8 eventi totali (da vllm-mlx `responses_models.py`)
+- [x] Tutti gli eventi SSE Responses API v2 implementati in `create_responses_sse_stream()`
+- [x] Eventi: `response.created`, `response.in_progress`, `response.completed`
+- [x] `response.output_item.added/done`, `response.output_text.delta/done`
+- [x] `response.content_part.added/done`, `response.reasoning_text.delta/done`
+- [x] `response.function_call_arguments.delta`
 
-### Fase 5 — Additional Tool Parsers (futuro)
-- Qwen parser (`<tool_call>`, `[Calling tool:]`)
-- Mistral parser (`[TOOL_CALLS]`)
-- Kimi parser (`<|tool_calls_section_begin|>`)
-- GLM-4.7 parser (`<tool_call>func_name<arg_key>`)
+### Fase 5 — Additional Tool Parsers (futuro — non iniziato)
+- [ ] Qwen parser (`<tool_call>`, `[Calling tool:]`)
+- [ ] Mistral parser (`[TOOL_CALLS]`)
+- [ ] Kimi parser (`<|tool_calls_section_begin|>`)
+- [ ] GLM-4.7 parser (`<tool_call>func_name<arg_key>`)
 
 ## Regole di sviluppo
 
