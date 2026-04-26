@@ -66,10 +66,10 @@ Da vllm-mlx `deepseek_tool_parser.py`:
 ```
 
 Nuovo modulo: `src/tool_parsers.rs` con:
-- `ToolParser` trait (extract_tool_calls, extract_tool_calls_streaming)
-- `DeepSeekToolParser` struct
-- Regex per token unicode DeepSeek
-- Integrazione in `proxy.rs` post-risposta backend
+- [x] `ToolParser` trait (extract_tool_calls, extract_tool_calls_streaming)
+- [x] `DeepSeekToolParser` struct
+- [x] Regex per token unicode DeepSeek
+- [x] Integrazione in `proxy.rs` post-risposta backend
 
 ### Fase 2 — Streaming Tool Call Filter
 **Obiettivo**: Sopprimere markup tool dal testo streaming
@@ -82,9 +82,9 @@ Nuovo modulo: `src/tool_parsers.rs` con:
 ### Fase 3 — x-anthropic-billing-header Strip
 **Obiettivo**: Rimuovere header per-turn di Claude Code che bloccano prefix caching
 
-- Una regex in `transform.rs` `anthropic_to_openai()`
-- Pattern: `x-anthropic-billing-header:[^\n]*\n?`
-- Effetto: permette prefix-cache reuse tra turni
+- [x] Una regex in `transform.rs` `anthropic_to_openai()`
+- [x] Pattern: `x-anthropic-billing-header:[^\n]*\n?`
+- [x] Effetto: permette prefix-cache reuse tra turni
 
 ### Fase 4 — Responses API v2 SSE Events
 **Obiettivo**: Streaming eventi strutturati per `/v1/responses`
