@@ -4,6 +4,8 @@ use crate::model_cache;
 use crate::models::{anthropic, openai, responses};
 use crate::rate_limiter::SharedRateLimiter;
 use crate::tool_names::ToolNameMap;
+use crate::tool_parsers::ToolParser;
+use crate::tool_parsers::deepseek::DeepSeekToolParser;
 use crate::transform::{self, generate_message_id};
 use axum::{
     body::Body,
@@ -747,7 +749,33 @@ async fn handle_non_streaming(
         )));
     }
 
-    let openai_resp: openai::OpenAIResponse = response.json().await?;
+    let mut openai_resp: openai::OpenAIResponse = response.json().await?;
+    // DeepSeek may return tool calls embedded in text instead of structured
+    // tool_calls JSON. Extract them if the profile expects text-only backend.
+    if config.backend_profile == BackendProfile::Deepseek {
+        if let Some(choice) = openai_resp.choices.first_mut() {
+            if let Some(ref content_text) = choice.message.content {
+                if content_text.contains("\u{ff5c}tool") {
+                    let parser = DeepSeekToolParser::default();
+                    let parsed = parser.extract_tool_calls(content_text);
+                    if parsed.tools_called {
+                        choice.message.tool_calls = Some(
+                            parsed.tool_calls.iter().map(|tc| openai::ToolCall {
+                                id: tc.id.clone(),
+                                call_type: "function".to_string(),
+                                function: openai::FunctionCall {
+                                    name: tc.name.clone(),
+                                    arguments: tc.arguments.clone(),
+                                },
+                            }).collect()
+                        );
+                        // Don't send raw tool markup text to the client
+                        choice.message.content = parsed.content.clone();
+                    }
+                }
+            }
+        }
+    }
     if let Some(choice) = openai_resp.choices.first() {
         if let Some(tool_calls) = &choice.message.tool_calls {
             store_reasoning_for_tool_calls(
