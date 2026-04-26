@@ -1,6 +1,6 @@
 # AnthMorph
 
-[![Status](https://img.shields.io/badge/Status-0.1.6-blue.svg)](#project-status)
+[![Status](https://img.shields.io/badge/Status-In_Development-yellow.svg)](https://github.com/DioNanos/AnthMorph/tree/develop)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
@@ -12,7 +12,7 @@ The current focus is **DeepSeek V4 support**, especially `deepseek-v4-pro[1m]` f
 
 ## Project Status
 
-- Current line: `0.1.6`
+- Current line: `develop` (pre-release)
 - Primary target: DeepSeek V4 Pro / `deepseek-v4-pro[1m]`
 - Secondary targets: `deepseek-v4-pro`, `deepseek-v4-flash`, `chutes.ai`, and generic OpenAI-compatible backends
 - Public package: `@mmmbuto/anthmorph`
