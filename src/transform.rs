@@ -2,6 +2,7 @@ use crate::config::{BackendProfile, CompatMode};
 use crate::error::{ProxyError, ProxyResult};
 use crate::models::{anthropic, openai};
 use crate::tool_names::ToolNameMap;
+use regex::Regex;
 use serde_json::{json, Value};
 
 pub fn generate_message_id() -> String {
@@ -175,6 +176,16 @@ pub fn anthropic_to_openai(
         };
 
         if !system_text.is_empty() {
+            // Strip x-anthropic-billing-header injected by Claude Code per-turn.
+            // These headers contain a per-request hash that prevents prefix-cache
+            // reuse across turn boundaries.
+            static BILLING_HEADER_RE: std::sync::LazyLock<Regex> =
+                std::sync::LazyLock::new(|| {
+                    Regex::new(r"(?m)^x-anthropic-billing-header:[^
+]*
+?").unwrap()
+                });
+            let system_text = BILLING_HEADER_RE.replace_all(&system_text, "").to_string();
             openai_messages.push(openai::Message {
                 role: "system".to_string(),
                 content: Some(openai::MessageContent::Text(system_text)),
@@ -610,6 +621,7 @@ mod tests {
         AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt, Tool,
     };
     use crate::tool_names::ToolNameMap;
+use regex::Regex;
 
     fn sample_request() -> AnthropicRequest {
         AnthropicRequest {
