@@ -5,6 +5,7 @@ mod models;
 mod proxy;
 mod rate_limiter;
 mod tool_names;
+mod tool_parsers;
 mod transform;
 
 use axum::{routing::post, Extension, Router};
