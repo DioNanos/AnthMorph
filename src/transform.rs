@@ -621,7 +621,6 @@ mod tests {
         AnthropicRequest, ContentBlock, Message, MessageContent, SystemMessage, SystemPrompt, Tool,
     };
     use crate::tool_names::ToolNameMap;
-use regex::Regex;
 
     fn sample_request() -> AnthropicRequest {
         AnthropicRequest {
