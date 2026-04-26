@@ -1673,7 +1673,9 @@ fn create_responses_sse_stream(
         let mut created_sent = false;
         let mut message_started = false;
         let mut message_text = String::new();
+        let mut reasoning_started = false;
         let mut reasoning_content = String::new();
+        let mut content_part_started_text = false;
         let mut functions: BTreeMap<usize, FunctionState> = BTreeMap::new();
         pin!(stream);
         let mut raw_buffer: Vec<u8> = Vec::new();
@@ -1734,13 +1736,39 @@ fn create_responses_sse_stream(
                                         }
                                     });
                                     yield Ok(Bytes::from(sse_event("response.created", &created)));
+                                    yield Ok(Bytes::from(sse_event("response.in_progress", &json!({
+                                        "type": "response.in_progress",
+                                        "response": {
+                                            "id": response_id.clone().unwrap_or_else(generate_message_id),
+                                            "model": model_name.clone().unwrap_or_else(|| fallback_model.clone())
+                                        }
+                                    }))));
                                     created_sent = true;
                                 }
 
                                 if let Some(choice) = chunk.choices.first() {
                                     if let Some(reasoning) = &choice.delta.reasoning {
                                         if !reasoning.is_empty() {
+                                            if !reasoning_started {
+                                                let item = json!({
+                                                    "type": "reasoning",
+                                                    "content": [{"type": "reasoning_text", "text": ""}]
+                                                });
+                                                yield Ok(Bytes::from(sse_event("response.output_item.added", &json!({
+                                                    "type": "response.output_item.added",
+                                                    "item": item,
+                                                }))));
+                                                yield Ok(Bytes::from(sse_event("response.content_part.added", &json!({
+                                                    "type": "response.content_part.added",
+                                                    "part": {"type": "reasoning_text", "text": ""}
+                                                }))));
+                                                reasoning_started = true;
+                                            }
                                             reasoning_content.push_str(reasoning);
+                                            yield Ok(Bytes::from(sse_event("response.reasoning_text.delta", &json!({
+                                                "type": "response.reasoning_text.delta",
+                                                "delta": reasoning,
+                                            }))));
                                         }
                                     }
                                     if let Some(content) = &choice.delta.content {
@@ -1756,6 +1784,13 @@ fn create_responses_sse_stream(
                                                     "item": item,
                                                 }))));
                                                 message_started = true;
+                                            }
+                                            if !content_part_started_text {
+                                                yield Ok(Bytes::from(sse_event("response.content_part.added", &json!({
+                                                    "type": "response.content_part.added",
+                                                    "part": {"type": "output_text", "text": ""}
+                                                }))));
+                                                content_part_started_text = true;
                                             }
                                             message_text.push_str(content);
                                             yield Ok(Bytes::from(sse_event("response.output_text.delta", &json!({
@@ -1828,7 +1863,32 @@ fn create_responses_sse_stream(
                                             )
                                             .await;
                                         }
+                                        if reasoning_started {
+                                            yield Ok(Bytes::from(sse_event("response.reasoning_text.done", &json!({
+                                                "type": "response.reasoning_text.done",
+                                                "text": reasoning_content,
+                                            }))));
+                                            yield Ok(Bytes::from(sse_event("response.content_part.done", &json!({
+                                                "type": "response.content_part.done",
+                                            }))));
+                                            yield Ok(Bytes::from(sse_event("response.output_item.done", &json!({
+                                                "type": "response.output_item.done",
+                                                "item": {
+                                                    "type": "reasoning",
+                                                    "content": [{"type": "reasoning_text", "text": reasoning_content}],
+                                                }
+                                            }))));
+                                        }
                                         if message_started {
+                                            if content_part_started_text {
+                                                yield Ok(Bytes::from(sse_event("response.output_text.done", &json!({
+                                                    "type": "response.output_text.done",
+                                                    "text": message_text,
+                                                }))));
+                                                yield Ok(Bytes::from(sse_event("response.content_part.done", &json!({
+                                                    "type": "response.content_part.done",
+                                                }))));
+                                            }
                                             yield Ok(Bytes::from(sse_event("response.output_item.done", &json!({
                                                 "type": "response.output_item.done",
                                                 "item": {
