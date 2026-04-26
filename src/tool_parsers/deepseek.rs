@@ -196,3 +196,128 @@ mod tests {
         assert_eq!(result.tool_calls[0].name, "get_weather");
     }
 }
+
+// ============================================================================
+// Streaming filter for DeepSeek tool calls
+// ============================================================================
+
+use std::collections::VecDeque;
+
+/// Filter that detects and suppresses DeepSeek tool call markers from
+/// streaming text output, accumulating tool calls until they complete.
+///
+/// When DeepSeek generates a tool call, the output contains:
+/// `<U+FF5C>tool<U+2581>call<U+2581>begin<U+FF5C>function<SEP>name\n```json\n{...}\n```<END>`
+///
+/// This filter:
+/// 1. Suppresses the markup tokens from visible text output
+/// 2. Accumulates the full tool call text
+/// 3. When the tool call completes, provides the extracted call
+pub struct DeepSeekStreamFilter {
+    /// Accumulated text since entering a tool call block
+    buffer: String,
+    /// Whether we're currently inside a tool call
+    in_tool_call: bool,
+    /// Completed tool calls ready to emit
+    completed_calls: VecDeque<ExtractedToolCall>,
+}
+
+impl DeepSeekStreamFilter {
+    pub fn new() -> Self {
+        Self {
+            buffer: String::new(),
+            in_tool_call: false,
+            completed_calls: VecDeque::new(),
+        }
+    }
+
+    /// Process a chunk of streaming text.
+    ///
+    /// Returns `(visible_text, completed_tool_calls)` where:
+    /// - `visible_text` is the text safe to emit (tool markup suppressed)
+    /// - `completed_tool_calls` is any tool calls that finished in this chunk
+    pub fn push(&mut self, chunk: &str) -> (String, Vec<ExtractedToolCall>) {
+        let tool_call_start: &str = "<\u{ff5c}tool\u{2581}call\u{2581}begin\u{ff5c}>";
+        let tool_call_end: &str = "<\u{ff5c}tool\u{2581}call\u{2581}end\u{ff5c}>";
+        let calls_end: &str = "<\u{ff5c}tool\u{2581}calls\u{2581}end\u{ff5c}>";
+        let _sep: &str = "<\u{ff5c}tool\u{2581}sep\u{ff5c}>";
+
+        let mut visible = String::new();
+        let mut work = chunk;
+
+        loop {
+            if self.in_tool_call {
+                // Check if tool call completed
+                if let Some(end_pos) = work.find(tool_call_end) {
+                    self.buffer.push_str(&work[..end_pos + tool_call_end.len()]);
+
+                    // Parse the accumulated tool call
+                    let parser = DeepSeekToolParser::default();
+                    let result = parser.extract_tool_calls(&self.buffer);
+                    if result.tools_called {
+                        for tc in result.tool_calls {
+                            self.completed_calls.push_back(tc);
+                        }
+                    }
+
+                    self.buffer.clear();
+                    self.in_tool_call = false;
+                    work = &work[end_pos + tool_call_end.len()..];
+                    continue;
+                }
+
+                // Check for calls_end (end of all tool calls)
+                if let Some(end_pos) = work.find(calls_end) {
+                    self.buffer.push_str(&work[..end_pos + calls_end.len()]);
+                    work = &work[end_pos + calls_end.len()..];
+                    // Don't clear yet - we're looking for the next call_start
+                    continue;
+                }
+
+                // Still inside tool call - buffer everything
+                self.buffer.push_str(work);
+                break;
+            }
+
+            // Not in tool call - look for start marker
+            if let Some(start_pos) = work.find(tool_call_start) {
+                // Emit visible text before the tool call
+                visible.push_str(&work[..start_pos]);
+                self.buffer.push_str(&work[start_pos..]);
+                self.in_tool_call = true;
+                work = "";
+                continue;
+            }
+
+            // No tool markers - pass through as visible text
+            visible.push_str(work);
+            break;
+        }
+
+        let completed: Vec<_> = self.completed_calls.drain(..).collect();
+        (visible, completed)
+    }
+
+    /// Flush any remaining buffered content when the stream ends.
+    pub fn finish(&mut self) -> (String, Vec<ExtractedToolCall>) {
+        let result = if self.in_tool_call && !self.buffer.is_empty() {
+            // Try to parse any incomplete tool call
+            let parser = DeepSeekToolParser::default();
+            let parse_result = parser.extract_tool_calls(&self.buffer);
+            if parse_result.tools_called {
+                for tc in parse_result.tool_calls {
+                    self.completed_calls.push_back(tc);
+                }
+                (String::new(), Vec::<ExtractedToolCall>::new())
+            } else {
+                // Incomplete tool call - emit as visible text
+                let text = std::mem::take(&mut self.buffer);
+                (text, Vec::new())
+            }
+        } else {
+            (String::new(), Vec::new())
+        };
+        let completed: Vec<_> = self.completed_calls.drain(..).collect();
+        (result.0, completed)
+    }
+}

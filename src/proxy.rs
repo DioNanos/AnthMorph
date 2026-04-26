@@ -5,7 +5,7 @@ use crate::models::{anthropic, openai, responses};
 use crate::rate_limiter::SharedRateLimiter;
 use crate::tool_names::ToolNameMap;
 use crate::tool_parsers::ToolParser;
-use crate::tool_parsers::deepseek::DeepSeekToolParser;
+use crate::tool_parsers::deepseek::{DeepSeekStreamFilter, DeepSeekToolParser};
 use crate::transform::{self, generate_message_id};
 use axum::{
     body::Body,
@@ -877,6 +877,11 @@ fn create_sse_stream(
         let mut active_block: Option<ActiveBlock> = None;
         let mut tool_states: BTreeMap<usize, ToolCallState> = BTreeMap::new();
         let mut think_filter = ThinkTagStreamFilter::default();
+        let mut deepseek_filter = if profile == BackendProfile::Deepseek {
+            Some(DeepSeekStreamFilter::new())
+        } else {
+            None
+        };
         let mut reasoning_content = String::new();
 
         pin!(stream);
@@ -1011,7 +1016,33 @@ fn create_sse_stream(
 
                                     if let Some(content) = &choice.delta.content {
                                         if !content.is_empty() {
-                                            let (embedded_reasoning, visible_text) = think_filter.push(content);
+                                            let (embedded_reasoning, raw_visible) = think_filter.push(content);
+                                            // For DeepSeek profile, filter tool call markup from streaming text
+                                            let (visible_text, deepseek_tool_calls) = if let Some(ref mut ds_filter) = deepseek_filter {
+                                                ds_filter.push(&raw_visible)
+                                            } else {
+                                                (raw_visible, Vec::new())
+                                            };
+                                            // Emit any completed DeepSeek tool calls
+                                            for tc in &deepseek_tool_calls {
+                                                let tool_index = tool_states.len();
+                                                let state = tool_states.entry(tool_index).or_default();
+                                                state.id = Some(tc.id.clone());
+                                                state.name = Some(tc.name.clone());
+                                                state.arguments = tc.arguments.clone();
+                                                // Emit tool_use start block
+                                                let tool_index = tool_states.len().saturating_sub(1);
+                                                let (idx, transitions) = transition_to_tool(
+                                                    &mut active_block,
+                                                    &mut next_content_index,
+                                                    tool_index,
+                                                    tc.id.clone(),
+                                                    tc.name.clone(),
+                                                );
+                                                for event in transitions {
+                                                    yield Ok(Bytes::from(event));
+                                                }
+                                            }
 
                                             if profile.supports_reasoning() {
                                                 for reasoning in embedded_reasoning {
