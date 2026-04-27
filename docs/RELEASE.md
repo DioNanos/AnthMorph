@@ -4,14 +4,20 @@ This guide prepares AnthMorph for GitHub push/release and npm publish without em
 
 ## Preconditions
 
-- release auth for GitHub and npm is already configured on the release machine
-- git remote `origin` points to the public release repository
-- npm login is already configured externally
-- Docker is available on the release machine
+- release auth for GitHub and npm is configured externally
+- git remote `origin` points to the release repository
+- npm login is configured externally
+- Docker is available for reproducible Linux checks when publishing
 
-## Release verification
+## Release Verification
 
-Run the full Docker verification set:
+Run local Rust coverage first:
+
+```bash
+cargo test
+```
+
+Run the Docker verification set before publishing:
 
 ```bash
 ./scripts/docker_release_checks.sh
@@ -31,43 +37,42 @@ Or step by step:
 
 - working tree reviewed and intentional
 - `CHANGELOG.md` updated
-- versions aligned in `Cargo.toml`, `package.json`, and docs
-- Docker secret scan passes
+- versions aligned in `Cargo.toml`, `Cargo.lock`, `package.json`, and docs
 - Rust tests pass
+- Docker secret scan passes
 - Docker Linux build passes
 - npm pack dry-run passes
 - npm publish dry-run passes
+- runtime surface remains `POST /v1/responses`, `GET /v1/models`, and `GET /health`
 
-## GitHub push and tag
+## Git Push And Tag
 
 ```bash
 git status
 git add .
-git commit -m "Release v0.1.5"
-git tag -a v0.1.5 -m "Release v0.1.5"
-git push origin main
-git push origin v0.1.5
+git commit -m "Release v0.2.0"
+git tag -a v0.2.0 -m "Release v0.2.0"
+git push origin develop
+git push origin v0.2.0
 ```
 
-## GitHub release notes
+## GitHub Release Notes
 
-Use the `0.1.5` section from `CHANGELOG.md` as the release body.
+Use the `0.2.0` section from `CHANGELOG.md` as the release body.
 
 If `gh` is installed:
 
 ```bash
 awk '
-  /^## 0.1.5$/ {capture=1; next}
+  /^## 0.2.0$/ {capture=1; next}
   /^## / && capture {exit}
   capture {print}
-' CHANGELOG.md > /tmp/anthmorph-v0.1.5-notes.md
+' CHANGELOG.md > /tmp/anthmorph-v0.2.0-notes.md
 
-gh release create v0.1.5 --title "v0.1.5" --notes-file /tmp/anthmorph-v0.1.5-notes.md
+gh release create v0.2.0 --title "v0.2.0" --notes-file /tmp/anthmorph-v0.2.0-notes.md
 ```
 
-If `gh` is not installed, create the release in the GitHub web UI from tag `v0.1.5`.
-
-## npm publish
+## npm Publish
 
 Final publish:
 
@@ -77,6 +82,6 @@ npm publish --access public
 
 ## Notes
 
-- Do not publish from a dirty repo by accident.
+- Do not publish from a dirty repo.
 - Do not store npm tokens, GitHub tokens, or API keys in tracked files.
-- If Linux install UX changes materially, update `README.md` and `docs/PACKAGING.md` in the same release.
+- If the Codex Responses surface changes, update `README.md`, `CHANGELOG.md`, and release notes in the same commit.

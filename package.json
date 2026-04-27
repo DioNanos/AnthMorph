@@ -1,7 +1,7 @@
 {
   "name": "@mmmbuto/anthmorph",
-  "version": "0.1.6",
-  "description": "Universal Anthropic and Responses proxy for DeepSeek, Chutes, and OpenAI-compatible backends",
+  "version": "0.2.0",
+  "description": "Responses-native Codex companion proxy for OpenAI-compatible backends",
   "license": "MIT",
   "author": "Davide A. Guglielmi",
   "bin": {

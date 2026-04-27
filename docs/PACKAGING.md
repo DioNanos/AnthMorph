@@ -2,15 +2,15 @@
 
 AnthMorph ships as a single npm package: `@mmmbuto/anthmorph`.
 
-## Platform model
+## Platform Model
 
 - Termux on Android/aarch64 uses the bundled prebuilt binary from `prebuilt/anthmorph`
 - Linux and macOS build from source during install
 - the supported reproducible build path is Docker
 
-The bundled prebuilt is currently **Termux-only**. Linux is supported through source builds, not a bundled Linux prebuilt.
+The bundled prebuilt is currently Termux-only. Linux and macOS are supported through source builds.
 
-## Install behavior
+## Install Behavior
 
 `postinstall` does this:
 
@@ -18,7 +18,17 @@ The bundled prebuilt is currently **Termux-only**. Linux is supported through so
 - on Linux/macOS: runs `cargo build --release`
 - if Cargo is missing: exits with a clear error and points to Docker-based build instructions
 
-## Docker build
+## Runtime Shape
+
+The 0.2.x package is a Codex companion daemon. The public runtime surface is:
+
+- `POST /v1/responses`
+- `GET /v1/models`
+- `GET /health`
+
+The package should not document or expose public `/chat/completions`, `/v1/messages`, or token-count ingress as supported runtime APIs. `ANTHMORPH_UPSTREAM_API=chat-completions` is allowed only as an internal backend adapter for providers that do not expose `/responses`.
+
+## Docker Build
 
 Build a Linux release binary without depending on host Rust:
 
@@ -26,9 +36,7 @@ Build a Linux release binary without depending on host Rust:
 ./scripts/docker_build_linux.sh
 ```
 
-This uses `rust:1.89-bookworm` and exports `/usr/local/cargo/bin` into `PATH`, which is required in this environment.
-
-## npm package contents
+## npm Package Contents
 
 The published package should include only:
 
@@ -44,7 +52,7 @@ The published package should not include:
 - test output, temp logs, or tarballs
 - operator-only release scratch files
 
-## Dry-run validation
+## Dry-Run Validation
 
 Pack dry-run:
 

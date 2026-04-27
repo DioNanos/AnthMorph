@@ -1,4 +1,4 @@
-use crate::config::{BackendProfile, CompatMode};
+use crate::config::{BackendProfile, CompatMode, UpstreamApi};
 use crate::error::{ProxyError, ProxyResult};
 use crate::model_cache;
 use crate::models::{anthropic, openai, responses};
@@ -118,7 +118,12 @@ fn request_has_thinking(req: &anthropic::AnthropicRequest) -> bool {
 fn responses_request_has_reasoning(req: &responses::ResponsesRequest) -> bool {
     req.reasoning
         .as_ref()
-        .and_then(|value| value.get("effort").and_then(|v| v.as_str()).or_else(|| value.get("summary").and_then(|v| v.as_str())))
+        .and_then(|value| {
+            value
+                .get("effort")
+                .and_then(|v| v.as_str())
+                .or_else(|| value.get("summary").and_then(|v| v.as_str()))
+        })
         .is_some()
 }
 
@@ -639,21 +644,29 @@ pub async fn responses_handler(
         ));
     }
 
-    let openai_req = responses_to_openai(
-        &req,
-        &model,
-        config.backend_profile,
-        &tool_name_map,
-    )?;
-    let mut openai_req = openai_req;
-    apply_cached_reasoning_to_messages(&mut openai_req.messages, &reasoning_cache).await;
-    validate_deepseek_request(config.backend_profile, &openai_req)?;
-
     let client_key = extract_client_key(&headers);
     let backend_key = resolve_backend_key(client_key.as_deref(), &config);
 
-    if wants_stream {
-        handle_responses_streaming(
+    if config.upstream_api == UpstreamApi::ChatCompletions {
+        let openai_req =
+            responses_to_openai(&req, &model, config.backend_profile, &tool_name_map)?;
+        let mut openai_req = openai_req;
+        apply_cached_reasoning_to_messages(&mut openai_req.messages, &reasoning_cache).await;
+        validate_deepseek_request(config.backend_profile, &openai_req)?;
+
+        if wants_stream {
+            return handle_responses_streaming(
+                config,
+                client,
+                openai_req,
+                backend_key,
+                tool_name_map,
+                reasoning_cache,
+            )
+            .await;
+        }
+
+        return handle_responses_non_streaming(
             config,
             client,
             openai_req,
@@ -661,18 +674,139 @@ pub async fn responses_handler(
             tool_name_map,
             reasoning_cache,
         )
-        .await
-    } else {
-        handle_responses_non_streaming(
-            config,
-            client,
-            openai_req,
-            backend_key,
-            tool_name_map,
-            reasoning_cache,
-        )
-        .await
+        .await;
     }
+
+    let native_payload = remap_responses_request_for_backend(&req, &model, &tool_name_map)?;
+
+    if wants_stream {
+        return handle_native_responses_streaming(config, client, native_payload, backend_key)
+            .await;
+    }
+
+    handle_native_responses_non_streaming(config, client, native_payload, backend_key).await
+}
+
+fn remap_responses_request_for_backend(
+    req: &responses::ResponsesRequest,
+    model: &str,
+    tool_name_map: &ToolNameMap,
+) -> ProxyResult<serde_json::Value> {
+    let mut value = serde_json::to_value(req)?;
+    value["model"] = serde_json::Value::String(model.to_string());
+
+    if let Some(tools) = value
+        .get_mut("tools")
+        .and_then(|tools| tools.as_array_mut())
+    {
+        for tool in tools {
+            if tool.get("type").and_then(|kind| kind.as_str()) == Some("function") {
+                if let Some(name) = tool.get_mut("name").and_then(|name| name.as_str()) {
+                    tool["name"] = serde_json::Value::String(tool_name_map.to_backend(name));
+                }
+            }
+        }
+    }
+
+    if let Some(items) = value
+        .get_mut("input")
+        .and_then(|input| input.as_array_mut())
+    {
+        for item in items {
+            if item.get("type").and_then(|kind| kind.as_str()) == Some("function_call") {
+                if let Some(name) = item.get_mut("name").and_then(|name| name.as_str()) {
+                    item["name"] = serde_json::Value::String(tool_name_map.to_backend(name));
+                }
+            }
+        }
+    }
+
+    if let Some(choice) = value.get_mut("tool_choice") {
+        if choice.get("type").and_then(|kind| kind.as_str()) == Some("function") {
+            if let Some(name) = choice.get_mut("name").and_then(|name| name.as_str()) {
+                choice["name"] = serde_json::Value::String(tool_name_map.to_backend(name));
+            }
+        }
+    }
+
+    Ok(value)
+}
+
+async fn handle_native_responses_non_streaming(
+    config: Arc<Config>,
+    client: Client,
+    payload: serde_json::Value,
+    backend_key: Option<String>,
+) -> ProxyResult<Response> {
+    let url = config.responses_url();
+    let mut req_builder = client
+        .post(&url)
+        .json(&payload)
+        .timeout(Duration::from_secs(300));
+    if let Some(api_key) = &backend_key {
+        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req_builder.send().await.map_err(ProxyError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(ProxyError::Http)?;
+
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&body);
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status,
+            redact_secrets(&text)
+        )));
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    Ok((headers, body).into_response())
+}
+
+async fn handle_native_responses_streaming(
+    config: Arc<Config>,
+    client: Client,
+    payload: serde_json::Value,
+    backend_key: Option<String>,
+) -> ProxyResult<Response> {
+    let url = config.responses_url();
+    let mut req_builder = client
+        .post(&url)
+        .json(&payload)
+        .timeout(Duration::from_secs(300));
+    if let Some(api_key) = &backend_key {
+        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req_builder.send().await.map_err(ProxyError::Http)?;
+    let status = response.status();
+
+    if !status.is_success() {
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status,
+            redact_secrets(&text)
+        )));
+    }
+
+    let stream = response.bytes_stream().map(|chunk| {
+        chunk.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
+    });
+
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
+    headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+    headers.insert("Connection", HeaderValue::from_static("keep-alive"));
+    Ok((headers, Body::from_stream(stream)).into_response())
 }
 
 pub async fn models_handler(
@@ -1032,7 +1166,7 @@ fn create_sse_stream(
                                                 state.arguments = tc.arguments.clone();
                                                 // Emit tool_use start block
                                                 let tool_index = tool_states.len().saturating_sub(1);
-                                                let (idx, transitions) = transition_to_tool(
+                                                let (_idx, transitions) = transition_to_tool(
                                                     &mut active_block,
                                                     &mut next_content_index,
                                                     tool_index,
@@ -1944,6 +2078,7 @@ fn create_responses_sse_stream(
 pub struct Config {
     pub backend_url: String,
     pub backend_profile: BackendProfile,
+    pub upstream_api: UpstreamApi,
     pub compat_mode: CompatMode,
     pub primary_model: String,
     pub reasoning_model: Option<String>,
@@ -1980,6 +2115,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(BackendProfile::Chutes),
+            upstream_api: std::env::var("ANTHMORPH_UPSTREAM_API")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(UpstreamApi::Responses),
             compat_mode: std::env::var("ANTHMORPH_COMPAT_MODE")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -2021,6 +2160,10 @@ impl Config {
         )
     }
 
+    pub fn responses_url(&self) -> String {
+        format!("{}/responses", self.backend_url.trim_end_matches('/'))
+    }
+
     pub fn models_url(&self) -> String {
         format!("{}/models", self.backend_url.trim_end_matches('/'))
     }
@@ -2048,6 +2191,7 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("backend_url", &self.backend_url)
             .field("backend_profile", &self.backend_profile.as_str())
+            .field("upstream_api", &self.upstream_api.as_str())
             .field("compat_mode", &self.compat_mode.as_str())
             .field("primary_model", &self.primary_model)
             .field("reasoning_model", &self.reasoning_model)
@@ -2561,6 +2705,7 @@ mod tests {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::OpenaiGeneric,
+            upstream_api: UpstreamApi::Responses,
             compat_mode: CompatMode::Strict,
             primary_model: "model".to_string(),
             reasoning_model: None,
@@ -2594,6 +2739,7 @@ mod tests {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::OpenaiGeneric,
+            upstream_api: UpstreamApi::Responses,
             compat_mode: CompatMode::Strict,
             primary_model: "model".to_string(),
             reasoning_model: None,
@@ -2617,6 +2763,7 @@ mod tests {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::OpenaiGeneric,
+            upstream_api: UpstreamApi::Responses,
             compat_mode: CompatMode::Strict,
             primary_model: "model".to_string(),
             reasoning_model: None,
@@ -2806,6 +2953,7 @@ mod tests {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::Deepseek,
+            upstream_api: UpstreamApi::Responses,
             compat_mode: CompatMode::Compat,
             primary_model: "deepseek-v4-pro".to_string(),
             reasoning_model: None,
@@ -2824,10 +2972,56 @@ mod tests {
     }
 
     #[test]
+    fn remaps_responses_payload_without_chat_translation() {
+        let request: responses::ResponsesRequest = serde_json::from_value(json!({
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Use the tool."}
+                    ]
+                },
+                {
+                    "type": "function_call",
+                    "name": "mcp__memory__memory_read__with_a_very_long_backend_name",
+                    "arguments": "{\"category\":\"base\"}"
+                }
+            ],
+            "tools": [{
+                "type": "function",
+                "name": "mcp__memory__memory_read__with_a_very_long_backend_name",
+                "parameters": {"type": "object"}
+            }],
+            "tool_choice": {
+                "type": "function",
+                "name": "mcp__memory__memory_read__with_a_very_long_backend_name"
+            },
+            "stream": true,
+            "parallel_tool_calls": false
+        }))
+        .unwrap();
+        let map = responses_tool_name_map(&request, BackendProfile::Deepseek);
+
+        let payload =
+            remap_responses_request_for_backend(&request, "deepseek-v4-pro", &map).unwrap();
+
+        assert_eq!(payload["model"], "deepseek-v4-pro");
+        assert_eq!(payload["stream"], true);
+        assert_eq!(payload["parallel_tool_calls"], false);
+        assert_eq!(payload["tools"][0]["name"], payload["input"][1]["name"]);
+        assert_eq!(payload["tool_choice"]["name"], payload["tools"][0]["name"]);
+        assert!(payload["tools"][0]["name"].as_str().unwrap().len() <= 64);
+        assert!(payload.get("messages").is_none());
+    }
+
+    #[test]
     fn build_cors_layer_rejects_wildcard() {
         let config = Config {
             backend_url: "https://example.com".to_string(),
             backend_profile: BackendProfile::OpenaiGeneric,
+            upstream_api: UpstreamApi::Responses,
             compat_mode: CompatMode::Strict,
             primary_model: "model".to_string(),
             reasoning_model: None,

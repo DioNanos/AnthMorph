@@ -45,6 +45,7 @@ def emit(k, v):
 emit("PORT", server.get("port", 3108))
 emit("COMPAT_MODE", server.get("compat_mode", "compat"))
 emit("BACKEND_PROFILE", profile.get("backend", "deepseek"))
+emit("UPSTREAM_API", profile.get("upstream_api", "responses"))
 emit("BACKEND_URL", profile.get("base_url", "https://api.deepseek.com"))
 emit("PRIMARY_MODEL", profile.get("model", "deepseek-v4-pro"))
 emit("REASONING_MODEL", profile.get("reasoning_model", profile.get("model", "")))
@@ -84,6 +85,7 @@ fi
 
 export PORT
 export ANTHMORPH_BACKEND_PROFILE=$BACKEND_PROFILE
+export ANTHMORPH_UPSTREAM_API=$UPSTREAM_API
 export ANTHMORPH_COMPAT_MODE=${COMPAT_MODE:-compat}
 export ANTHMORPH_BACKEND_URL=$BACKEND_URL
 export ANTHMORPH_PRIMARY_MODEL=$PRIMARY_MODEL

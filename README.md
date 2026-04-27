@@ -1,33 +1,32 @@
 # AnthMorph
 
-[![Status](https://img.shields.io/badge/Status-In_Development-yellow.svg)](https://github.com/DioNanos/AnthMorph/tree/develop)
+[![Status](https://img.shields.io/badge/Status-0.2.0-blue.svg)](#project-status)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
 
-AnthMorph is a local agent router for Claude-style and Codex-style clients.
-It exposes Anthropic `/v1/messages` and OpenAI `/v1/responses`, then adapts requests to provider APIs with tool-name normalization, model profiles, local secrets, and service management.
+AnthMorph is a small Rust daemon for Codex and codex-vl. It accepts OpenAI Responses API traffic locally, applies lightweight governance, model normalization, auth, rate limiting, and provider quirks, then forwards to the selected backend.
 
-The current focus is **DeepSeek V4 support**, especially `deepseek-v4-pro[1m]` for agentic Claude/Codex workflows. AnthMorph treats that profile strictly: if the provider returns a different model, the proxy reports the mismatch instead of silently downgrading.
+The 0.2.x line is intentionally simple: one optimized Codex ingress and no public chat or Anthropic compatibility routes. Backends can be native Responses providers or legacy OpenAI-compatible chat providers selected by `ANTHMORPH_UPSTREAM_API`.
 
 ## Project Status
 
-- Current line: `develop` (pre-release)
-- Primary target: DeepSeek V4 Pro / `deepseek-v4-pro[1m]`
-- Secondary targets: `deepseek-v4-pro`, `deepseek-v4-flash`, `chutes.ai`, and generic OpenAI-compatible backends
-- Public package: `@mmmbuto/anthmorph`
-- Runtime model: local daemon or foreground proxy configured from `~/.config/anthmorph/config.toml`
+- Current line: `0.2.0`
+- Public generation API: `POST /v1/responses`
+- Operational APIs: `GET /v1/models`, `GET /health`
+- Target clients: Codex and codex-vl with `wire_api = "responses"`
+- Target platforms: Linux, macOS, and Termux
+- Target backends: OpenAI-compatible Responses providers and legacy chat-completions providers behind the same Codex-facing `/v1/responses` ingress
 
-## Highlights
+## What It Does
 
-- Anthropic `/v1/messages` ingress for Claude Code and Claude-style clients
-- OpenAI `/v1/responses` ingress for Codex and codex-vl style clients
-- DeepSeek profiles for `deepseek-v4-pro[1m]`, normal Pro, and Flash
-- Strict model validation to catch provider-side fallback or remapping
-- Long MCP tool-name normalization for DeepSeek's 64-character function-name limit
-- Local secret handling through env vars, macOS Keychain, or fallback vault helpers
-- `anthmorphctl` for config bootstrap, profile selection, service install, health, and model probes
-- Chutes and generic OpenAI-compatible backends remain supported as explicit profiles
+- Exposes only the Codex-friendly Responses generation surface: `/v1/responses`
+- Keeps public client traffic Responses-native; legacy chat-completions translation is only an internal backend adapter when explicitly selected
+- Forwards upstream streaming as Server-Sent Events when `stream: true`
+- Normalizes configured/default models for clients that send `default` or Claude-style model names
+- Shortens long function tool names for providers with stricter tool-name limits
+- Supports local ingress auth, backend API key forwarding, CORS allow-lists, and per-client rate limiting
+- Serves `/v1/models` from backend discovery plus local fallback model cache
 
 ## Install
 
@@ -43,90 +42,81 @@ Local source build:
 cargo build --release
 ```
 
-Linux Docker build:
+Run directly:
 
 ```bash
-./scripts/docker_build_linux.sh
+ANTHMORPH_BACKEND_URL=https://integrate.api.nvidia.com/v1 \
+ANTHMORPH_BACKEND_PROFILE=openai-generic \
+ANTHMORPH_UPSTREAM_API=chat-completions \
+ANTHMORPH_PRIMARY_MODEL=deepseek-ai/deepseek-v4-pro \
+ANTHMORPH_API_KEY="$NVIDIA_API_KEY" \
+PORT=9876 \
+anthmorph
 ```
 
-## Quickstart: DeepSeek V4
+## Codex Provider
 
-Create the canonical config and initialize DeepSeek:
+Point Codex or codex-vl at AnthMorph with Responses wire format:
 
-```bash
-anthmorphctl config bootstrap
-anthmorphctl init deepseek4 --port 3108 --compat-mode compat
-anthmorphctl key set deepseek4
-anthmorphctl key test deepseek4
+```toml
+model = "deepseek-ai/deepseek-v4-pro"
+model_provider = "nvidia-anthmorph"
+
+[model_providers.nvidia-anthmorph]
+name = "NVIDIA via AnthMorph"
+base_url = "http://127.0.0.1:9876/v1"
+env_key = "OPENAI_API_KEY"
+wire_api = "responses"
+requires_openai_auth = false
 ```
 
-Start AnthMorph:
-
-```bash
-anthmorphctl service install
-anthmorphctl service restart
-anthmorphctl status
-```
-
-Probe the selected DeepSeek model:
-
-```bash
-anthmorphctl model probe deepseek4
-```
-
-The default DeepSeek profile requests `deepseek-v4-pro[1m]` in strict mode. If DeepSeek returns `deepseek-v4-flash` or any other model, AnthMorph reports the mismatch.
-
-Canonical config:
-
-```bash
-~/.config/anthmorph/config.toml
-```
-
-Local dev fallback:
-
-```bash
-./.anthmorph/config.toml
-```
-
-## Client Bootstrap
-
-Generate Claude Code settings:
-
-```bash
-anthmorphctl bootstrap claude-code --write
-```
-
-Generate a Codex provider snippet:
-
-```bash
-anthmorphctl bootstrap codex
-```
-
-AnthMorph exposes:
+For native Responses backends, AnthMorph forwards generation calls to:
 
 ```text
-http://127.0.0.1:3108/v1/messages
-http://127.0.0.1:3108/v1/responses
-http://127.0.0.1:3108/v1/models
-http://127.0.0.1:3108/health
+{ANTHMORPH_BACKEND_URL}/responses
 ```
 
-## DeepSeek Notes
+For legacy providers such as NVIDIA NIM, set `ANTHMORPH_UPSTREAM_API=chat-completions`. AnthMorph still exposes only `/v1/responses` to Codex and performs the backend adaptation internally.
 
-DeepSeek currently exposes `deepseek-v4-pro` and `deepseek-v4-flash` through its OpenAI-compatible model list. Its Claude Code guide also documents `deepseek-v4-pro[1m]` for Anthropic-compatible usage.
+## Runtime Surface
 
-AnthMorph handles this by making `deepseek-v4-pro[1m]` a strict profile:
+```text
+POST http://127.0.0.1:9876/v1/responses
+GET  http://127.0.0.1:9876/v1/models
+GET  http://127.0.0.1:9876/health
+```
 
-- Claude-style requests can use the DeepSeek Anthropic lane.
-- Codex-style `/v1/responses` requests do not silently fall back to `/chat/completions` when `[1m]` is selected.
-- If the provider remaps `[1m]` to Flash, AnthMorph returns a clear model mismatch error.
+`/v1/messages`, `/v1/messages/count_tokens`, and public chat ingress are not part of the 0.2.x runtime surface.
+
+## Environment
+
+Minimum direct environment:
+
+```bash
+PORT=9876
+ANTHMORPH_BACKEND_URL=https://integrate.api.nvidia.com/v1
+ANTHMORPH_BACKEND_PROFILE=openai-generic
+ANTHMORPH_UPSTREAM_API=chat-completions
+ANTHMORPH_PRIMARY_MODEL=deepseek-ai/deepseek-v4-pro
+ANTHMORPH_API_KEY=...
+```
+
+Optional:
+
+```bash
+ANTHMORPH_REASONING_MODEL=...
+ANTHMORPH_INGRESS_API_KEY=...
+ANTHMORPH_ALLOWED_ORIGINS=https://example.test
+ANTHMORPH_RATE_LIMIT_PER_MINUTE=60
+ANTHMORPH_STRICT_MODEL=true
+```
 
 ## Validation
 
 Local Rust tests:
 
 ```bash
-cargo test -- --nocapture
+cargo test
 ```
 
 Docker release checks:
@@ -135,21 +125,8 @@ Docker release checks:
 ./scripts/docker_release_checks.sh
 ```
 
-Direct DeepSeek validation:
-
-```bash
-DEEPSEEK_API_KEY=... ./scripts/test_deepseek4_direct.sh
-```
-
-Real Claude Code payload replay:
-
-```bash
-./scripts/test_claude_code_patterns_real.sh chutes
-```
-
 ## Docs
 
-- Claude Code setup: [docs/CLAUDE_CODE_SETUP.md](docs/CLAUDE_CODE_SETUP.md)
 - Packaging details: [docs/PACKAGING.md](docs/PACKAGING.md)
 - Release guide: [docs/RELEASE.md](docs/RELEASE.md)
 - Changelog: [CHANGELOG.md](CHANGELOG.md)

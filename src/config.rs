@@ -49,6 +49,35 @@ impl FromStr for BackendProfile {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UpstreamApi {
+    Responses,
+    ChatCompletions,
+}
+
+impl UpstreamApi {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            UpstreamApi::Responses => "responses",
+            UpstreamApi::ChatCompletions => "chat_completions",
+        }
+    }
+}
+
+impl FromStr for UpstreamApi {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "responses" | "response" => Ok(Self::Responses),
+            "chat_completions" | "chat-completions" | "chat" => Ok(Self::ChatCompletions),
+            other => Err(format!(
+                "unsupported upstream api '{other}', expected 'responses' or 'chat_completions'"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CompatMode {
     Strict,
     Compat,

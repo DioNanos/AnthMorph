@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod config;
 mod error;
 mod model_cache;
@@ -10,7 +12,7 @@ mod transform;
 
 use axum::{routing::post, Extension, Router};
 use clap::Parser;
-use config::{BackendProfile, CompatMode};
+use config::{BackendProfile, CompatMode, UpstreamApi};
 use proxy::{build_cors_layer, Config};
 use reqwest::Client;
 use std::collections::HashMap;
@@ -21,7 +23,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
 #[command(name = "anthmorph")]
-#[command(about = "Anthropic to OpenAI-compatible proxy")]
+#[command(about = "Responses-native Codex companion proxy")]
 #[command(version)]
 struct Cli {
     #[arg(long)]
@@ -36,6 +38,8 @@ struct Cli {
     api_key: Option<String>,
     #[arg(long, value_enum)]
     backend_profile: Option<BackendProfile>,
+    #[arg(long, value_enum)]
+    upstream_api: Option<UpstreamApi>,
     #[arg(long, value_enum)]
     compat_mode: Option<CompatMode>,
     #[arg(long)]
@@ -68,6 +72,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(profile) = cli.backend_profile {
         config.backend_profile = profile;
     }
+    if let Some(api) = cli.upstream_api {
+        config.upstream_api = api;
+    }
     if let Some(mode) = cli.compat_mode {
         config.compat_mode = mode;
     }
@@ -89,6 +96,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("AnthMorph v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("Backend URL: {}", config.backend_url);
     tracing::info!("Backend Profile: {}", config.backend_profile.as_str());
+    tracing::info!("Upstream API: {}", config.upstream_api.as_str());
     tracing::info!("Compat Mode: {}", config.compat_mode.as_str());
     tracing::info!("DeepSeek Anthropic Backend: {}", config.deepseek_anthropic_backend);
     tracing::info!("Strict Model: {}", config.strict_model);
@@ -158,12 +166,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let app = Router::new()
-        .route("/v1/messages", post(proxy::proxy_handler))
         .route("/v1/responses", post(proxy::responses_handler))
-        .route(
-            "/v1/messages/count_tokens",
-            post(proxy::count_tokens_handler),
-        )
         .route("/v1/models", axum::routing::get(proxy::models_handler))
         .route("/health", axum::routing::get(health_handler))
         .layer(Extension(config.clone()))
@@ -219,6 +222,7 @@ async fn health_handler(
     axum::Json(serde_json::json!({
         "status": model_status,
         "backend_profile": config.backend_profile.as_str(),
+        "upstream_api": config.upstream_api.as_str(),
         "compat_mode": config.compat_mode.as_str(),
         "resolved_model": config.primary_model,
         "requested_model": config.primary_model,

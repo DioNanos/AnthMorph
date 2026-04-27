@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.0
+
+- refocused AnthMorph as a Codex companion daemon with one public generation ingress: `POST /v1/responses`
+- removed public `/v1/messages` and `/v1/messages/count_tokens` routes from the runtime router
+- changed `/v1/responses` to prefer native Responses API upstreams, with an explicit `ANTHMORPH_UPSTREAM_API=chat-completions` backend adapter for legacy providers such as NVIDIA NIM
+- preserved model listing, health checks, ingress auth, rate limiting, model remapping, and backend function-name normalization
+- added regression coverage proving the Responses payload stays Responses-shaped and does not synthesize chat `messages`
+- updated docs and package metadata for the 0.2.0 Responses-native line
+
 ## 0.1.5
 
 - refocused the public README around AnthMorph as a local agent router with DeepSeek V4 support

@@ -434,6 +434,7 @@ fn expect_text_response_with_retry(server: &TestServer, expected_fragment: &str)
 }
 
 #[test]
+#[ignore = "AnthMorph is now Codex Responses-first; legacy /v1/messages smoke is no longer public API"]
 fn chutes_real_backend_smoke() {
     let Some(api_key) = require_env("CHUTES_API_KEY") else {
         return;
@@ -452,6 +453,7 @@ fn chutes_real_backend_smoke() {
 }
 
 #[test]
+#[ignore = "AnthMorph is now Codex Responses-first; legacy /v1/messages smoke is no longer public API"]
 fn minimax_real_backend_smoke() {
     let Some(api_key) = require_env("MINIMAX_API_KEY") else {
         return;
@@ -470,6 +472,7 @@ fn minimax_real_backend_smoke() {
 }
 
 #[test]
+#[ignore = "AnthMorph no longer exposes the legacy Anthropic ingress used by this provider error smoke"]
 fn alibaba_coding_plan_rejected_for_chat_completions() {
     let Some(api_key) = require_env("ALIBABA_CODE_API_KEY") else {
         return;
@@ -494,6 +497,7 @@ fn alibaba_coding_plan_rejected_for_chat_completions() {
 }
 
 #[test]
+#[ignore = "count_tokens belonged to the removed legacy /v1/messages public surface"]
 fn chutes_models_and_count_tokens_work() {
     let Some(api_key) = require_env("CHUTES_API_KEY") else {
         return;
@@ -527,6 +531,7 @@ fn chutes_models_and_count_tokens_work() {
 }
 
 #[test]
+#[ignore = "Claude payload corpus targets the removed legacy /v1/messages public surface"]
 fn chutes_claude_code_payload_corpus_streaming() {
     let Some(api_key) = require_env("CHUTES_API_KEY") else {
         return;
@@ -558,6 +563,7 @@ fn chutes_claude_code_payload_corpus_streaming() {
 }
 
 #[test]
+#[ignore = "Claude payload corpus targets the removed legacy /v1/messages public surface"]
 fn minimax_claude_code_payload_corpus_streaming() {
     let Some(api_key) = require_env("MINIMAX_API_KEY") else {
         return;
@@ -588,6 +594,7 @@ fn minimax_claude_code_payload_corpus_streaming() {
 }
 
 #[test]
+#[ignore = "AnthMorph is now Codex Responses-first; legacy /v1/messages smoke is no longer public API"]
 fn deepseek_real_backend_smoke() {
     let Some(api_key) = require_env("DEEPSEEK_API_KEY") else {
         return;
@@ -617,6 +624,7 @@ fn deepseek_real_backend_smoke() {
 }
 
 #[test]
+#[ignore = "legacy Claude tool-name path is not part of the public Codex Responses surface"]
 fn deepseek_long_tool_names_are_shortened_for_claude_path() {
     let Some(api_key) = require_env("DEEPSEEK_API_KEY") else {
         return;

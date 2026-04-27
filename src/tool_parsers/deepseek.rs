@@ -69,7 +69,6 @@ impl Default for DeepSeekToolParser {
 impl ToolParser for DeepSeekToolParser {
     fn extract_tool_calls(&self, model_output: &str) -> ExtractedToolCalls {
         // Check for the end marker (tool calls completed)
-        let calls_end = "<\u{ff5c}tool\u{2581}calls\u{2581}end\u{ff5c}>";
         let calls_start = "<\u{ff5c}tool\u{2581}calls\u{2581}begin\u{ff5c}>";
 
         let has_calls = model_output.contains(calls_start) || model_output.contains(TOOL_CALL_START);

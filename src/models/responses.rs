@@ -14,7 +14,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct ResponsesRequest {
     pub model: String,
     #[serde(default)]
