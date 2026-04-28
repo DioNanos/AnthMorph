@@ -4,8 +4,8 @@ use crate::model_cache;
 use crate::models::{anthropic, openai, responses};
 use crate::rate_limiter::SharedRateLimiter;
 use crate::tool_names::ToolNameMap;
-use crate::tool_parsers::ToolParser;
 use crate::tool_parsers::deepseek::{DeepSeekStreamFilter, DeepSeekToolParser};
+use crate::tool_parsers::ToolParser;
 use crate::transform::{self, generate_message_id};
 use axum::{
     body::Body,
@@ -204,10 +204,7 @@ fn validate_deepseek_request(
 
     if let Some(choice) = &request.tool_choice {
         if let openai::ToolChoice::Object { function, .. } = choice {
-            validate_deepseek_tool_name(
-                &function.name,
-                "tool_choice.function.name".to_string(),
-            )?;
+            validate_deepseek_tool_name(&function.name, "tool_choice.function.name".to_string())?;
         }
     }
 
@@ -304,7 +301,10 @@ fn remap_anthropic_request_for_backend(
         normalize_anthropic_system_for_deepseek(system);
     }
 
-    if let Some(tools) = value.get_mut("tools").and_then(|tools| tools.as_array_mut()) {
+    if let Some(tools) = value
+        .get_mut("tools")
+        .and_then(|tools| tools.as_array_mut())
+    {
         for tool in tools {
             if let Some(name) = tool.get_mut("name").and_then(|name| name.as_str()) {
                 tool["name"] = serde_json::Value::String(tool_name_map.to_backend(name));
@@ -312,9 +312,15 @@ fn remap_anthropic_request_for_backend(
         }
     }
 
-    if let Some(messages) = value.get_mut("messages").and_then(|messages| messages.as_array_mut()) {
+    if let Some(messages) = value
+        .get_mut("messages")
+        .and_then(|messages| messages.as_array_mut())
+    {
         for message in messages {
-            let Some(blocks) = message.get_mut("content").and_then(|content| content.as_array_mut()) else {
+            let Some(blocks) = message
+                .get_mut("content")
+                .and_then(|content| content.as_array_mut())
+            else {
                 continue;
             };
             for block in blocks {
@@ -347,7 +353,10 @@ fn normalize_anthropic_system_for_deepseek(system: &mut serde_json::Value) {
                 *system = json!([{"type": "text", "text": text}]);
             } else if let Some(text) = obj.get("Single").cloned() {
                 *system = json!([{"type": "text", "text": text}]);
-            } else if let Some(items) = obj.get_mut("Multiple").and_then(|value| value.as_array_mut()) {
+            } else if let Some(items) = obj
+                .get_mut("Multiple")
+                .and_then(|value| value.as_array_mut())
+            {
                 for item in items {
                     if let Some(obj) = item.as_object_mut() {
                         obj.entry("type").or_insert_with(|| json!("text"));
@@ -360,11 +369,11 @@ fn normalize_anthropic_system_for_deepseek(system: &mut serde_json::Value) {
     }
 }
 
-fn remap_anthropic_response_for_client(
-    value: &mut serde_json::Value,
-    tool_name_map: &ToolNameMap,
-) {
-    if let Some(content) = value.get_mut("content").and_then(|content| content.as_array_mut()) {
+fn remap_anthropic_response_for_client(value: &mut serde_json::Value, tool_name_map: &ToolNameMap) {
+    if let Some(content) = value
+        .get_mut("content")
+        .and_then(|content| content.as_array_mut())
+    {
         for block in content {
             if block.get("type").and_then(|kind| kind.as_str()) == Some("tool_use") {
                 if let Some(name) = block.get_mut("name").and_then(|name| name.as_str()) {
@@ -402,7 +411,11 @@ async fn handle_anthropic_backend(
 ) -> ProxyResult<Response> {
     let payload = remap_anthropic_request_for_backend(&req, &tool_name_map, &model)?;
     let url = config.anthropic_messages_url();
-    tracing::debug!("Sending Anthropic-format request to {} with model {}", url, model);
+    tracing::debug!(
+        "Sending Anthropic-format request to {} with model {}",
+        url,
+        model
+    );
 
     let mut req_builder = client
         .post(&url)
@@ -425,7 +438,11 @@ async fn handle_anthropic_backend(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        tracing::error!("Anthropic-format upstream error ({}): {}", status, redact_secrets(&error_text));
+        tracing::error!(
+            "Anthropic-format upstream error ({}): {}",
+            status,
+            redact_secrets(&error_text)
+        );
         return Err(ProxyError::Upstream(format!(
             "Upstream returned {}: {}",
             status, error_text
@@ -442,7 +459,10 @@ async fn handle_anthropic_backend(
             config.stream_chunk_timeout_secs,
         );
         let mut headers = HeaderMap::new();
-        headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
+        headers.insert(
+            "Content-Type",
+            HeaderValue::from_static("text/event-stream"),
+        );
         headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
         headers.insert("Connection", HeaderValue::from_static("keep-alive"));
         return Ok((headers, Body::from_stream(sse_stream)).into_response());
@@ -466,12 +486,9 @@ pub async fn proxy_handler(
     authorize_request(&headers, &config)?;
 
     if let Some(limiter) = &rate_limiter {
-        let client_key = extract_client_key(&headers)
-            .unwrap_or_else(|| "anonymous".to_string());
+        let client_key = extract_client_key(&headers).unwrap_or_else(|| "anonymous".to_string());
         if !limiter.check(&client_key).await {
-            return Err(ProxyError::Upstream(
-                "429 rate limit exceeded".to_string(),
-            ));
+            return Err(ProxyError::Upstream("429 rate limit exceeded".to_string()));
         }
     }
 
@@ -525,25 +542,17 @@ pub async fn proxy_handler(
     let backend_key = resolve_backend_key(client_key.as_deref(), &config);
 
     if config.backend_profile == BackendProfile::Deepseek && config.deepseek_anthropic_backend {
-        return handle_anthropic_backend(
-            config,
-            client,
-            req,
-            backend_key,
-            tool_name_map,
-            model,
-        )
-        .await;
+        return handle_anthropic_backend(config, client, req, backend_key, tool_name_map, model)
+            .await;
     }
 
-    let openai_req =
-        transform::anthropic_to_openai(
-            req,
-            &model,
-            config.backend_profile,
-            config.compat_mode,
-            &tool_name_map,
-        )?;
+    let openai_req = transform::anthropic_to_openai(
+        req,
+        &model,
+        config.backend_profile,
+        config.compat_mode,
+        &tool_name_map,
+    )?;
     let mut openai_req = openai_req;
     if config.backend_profile == BackendProfile::Deepseek {
         openai_req.thinking = Some(openai::ThinkingConfig {
@@ -558,8 +567,15 @@ pub async fn proxy_handler(
     validate_deepseek_request(config.backend_profile, &openai_req)?;
 
     if is_streaming {
-        handle_streaming(config, client, openai_req, backend_key, tool_name_map, reasoning_cache)
-            .await
+        handle_streaming(
+            config,
+            client,
+            openai_req,
+            backend_key,
+            tool_name_map,
+            reasoning_cache,
+        )
+        .await
     } else {
         handle_non_streaming(
             config,
@@ -586,14 +602,13 @@ pub async fn count_tokens_handler(
         map_model(&req.model, &config)
     };
     let tool_name_map = anthropic_tool_name_map(&req, config.backend_profile);
-    let openai_req =
-        transform::anthropic_to_openai(
-            req,
-            &model,
-            config.backend_profile,
-            config.compat_mode,
-            &tool_name_map,
-        )?;
+    let openai_req = transform::anthropic_to_openai(
+        req,
+        &model,
+        config.backend_profile,
+        config.compat_mode,
+        &tool_name_map,
+    )?;
     let serialized = serde_json::to_string(&openai_req)?;
     let estimated = std::cmp::max(1, serialized.chars().count() / 4);
     Ok(Json(anthropic::CountTokensResponse {
@@ -648,8 +663,7 @@ pub async fn responses_handler(
     let backend_key = resolve_backend_key(client_key.as_deref(), &config);
 
     if config.upstream_api == UpstreamApi::ChatCompletions {
-        let openai_req =
-            responses_to_openai(&req, &model, config.backend_profile, &tool_name_map)?;
+        let openai_req = responses_to_openai(&req, &model, config.backend_profile, &tool_name_map)?;
         let mut openai_req = openai_req;
         apply_cached_reasoning_to_messages(&mut openai_req.messages, &reasoning_cache).await;
         validate_deepseek_request(config.backend_profile, &openai_req)?;
@@ -685,6 +699,45 @@ pub async fn responses_handler(
     }
 
     handle_native_responses_non_streaming(config, client, native_payload, backend_key).await
+}
+
+pub async fn chat_completions_handler(
+    headers: HeaderMap,
+    Extension(config): Extension<Arc<Config>>,
+    Extension(client): Extension<Client>,
+    Extension(models_cache): Extension<model_cache::Cache>,
+    Extension(rate_limiter): Extension<Option<SharedRateLimiter>>,
+    Json(mut payload): Json<serde_json::Value>,
+) -> ProxyResult<Response> {
+    authorize_request(&headers, &config)?;
+
+    if let Some(limiter) = &rate_limiter {
+        let client_key = extract_client_key(&headers).unwrap_or_else(|| "anonymous".to_string());
+        if !limiter.check(&client_key).await {
+            return Err(ProxyError::Upstream("429 rate limit exceeded".to_string()));
+        }
+    }
+
+    if let Some(model) = payload.get("model").and_then(|model| model.as_str()) {
+        let mapped = map_model(model, &config);
+        let normalized = model_cache::normalize_model(&mapped, &models_cache).await;
+        payload["model"] = serde_json::Value::String(normalized);
+    } else {
+        payload["model"] = serde_json::Value::String(config.primary_model.clone());
+    }
+
+    let client_key = extract_client_key(&headers);
+    let backend_key = resolve_backend_key(client_key.as_deref(), &config);
+    let is_streaming = payload
+        .get("stream")
+        .and_then(|stream| stream.as_bool())
+        .unwrap_or(false);
+
+    if is_streaming {
+        forward_chat_completions_streaming(config, client, payload, backend_key).await
+    } else {
+        forward_chat_completions_non_streaming(config, client, payload, backend_key).await
+    }
 }
 
 fn remap_responses_request_for_backend(
@@ -730,6 +783,86 @@ fn remap_responses_request_for_backend(
     }
 
     Ok(value)
+}
+
+async fn forward_chat_completions_non_streaming(
+    config: Arc<Config>,
+    client: Client,
+    payload: serde_json::Value,
+    backend_key: Option<String>,
+) -> ProxyResult<Response> {
+    let url = config.chat_completions_url();
+    let mut req_builder = client
+        .post(&url)
+        .json(&payload)
+        .timeout(Duration::from_secs(300));
+    if let Some(api_key) = &backend_key {
+        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req_builder.send().await.map_err(ProxyError::Http)?;
+    let status = response.status();
+    let body = response.bytes().await.map_err(ProxyError::Http)?;
+
+    if !status.is_success() {
+        let text = String::from_utf8_lossy(&body);
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status,
+            redact_secrets(&text)
+        )));
+    }
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    Ok((headers, body).into_response())
+}
+
+async fn forward_chat_completions_streaming(
+    config: Arc<Config>,
+    client: Client,
+    payload: serde_json::Value,
+    backend_key: Option<String>,
+) -> ProxyResult<Response> {
+    let url = config.chat_completions_url();
+    let mut req_builder = client
+        .post(&url)
+        .json(&payload)
+        .timeout(Duration::from_secs(300));
+    if let Some(api_key) = &backend_key {
+        req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let response = req_builder.send().await.map_err(ProxyError::Http)?;
+    let status = response.status();
+
+    if !status.is_success() {
+        let text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status,
+            redact_secrets(&text)
+        )));
+    }
+
+    let stream = response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("text/event-stream"),
+    );
+    headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
+    headers.insert("Connection", HeaderValue::from_static("keep-alive"));
+    Ok((headers, Body::from_stream(stream)).into_response())
 }
 
 async fn handle_native_responses_non_streaming(
@@ -798,12 +931,15 @@ async fn handle_native_responses_streaming(
         )));
     }
 
-    let stream = response.bytes_stream().map(|chunk| {
-        chunk.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err))
-    });
+    let stream = response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(|err| std::io::Error::new(std::io::ErrorKind::Other, err)));
 
     let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("text/event-stream"),
+    );
     headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
     headers.insert("Connection", HeaderValue::from_static("keep-alive"));
     Ok((headers, Body::from_stream(stream)).into_response())
@@ -876,7 +1012,11 @@ async fn handle_non_streaming(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        tracing::error!("Upstream error ({}): {}", status, redact_secrets(&error_text));
+        tracing::error!(
+            "Upstream error ({}): {}",
+            status,
+            redact_secrets(&error_text)
+        );
         return Err(ProxyError::Upstream(format!(
             "Upstream returned {}: {}",
             status, error_text
@@ -894,14 +1034,18 @@ async fn handle_non_streaming(
                     let parsed = parser.extract_tool_calls(content_text);
                     if parsed.tools_called {
                         choice.message.tool_calls = Some(
-                            parsed.tool_calls.iter().map(|tc| openai::ToolCall {
-                                id: tc.id.clone(),
-                                call_type: "function".to_string(),
-                                function: openai::FunctionCall {
-                                    name: tc.name.clone(),
-                                    arguments: tc.arguments.clone(),
-                                },
-                            }).collect()
+                            parsed
+                                .tool_calls
+                                .iter()
+                                .map(|tc| openai::ToolCall {
+                                    id: tc.id.clone(),
+                                    call_type: "function".to_string(),
+                                    function: openai::FunctionCall {
+                                        name: tc.name.clone(),
+                                        arguments: tc.arguments.clone(),
+                                    },
+                                })
+                                .collect(),
                         );
                         // Don't send raw tool markup text to the client
                         choice.message.content = parsed.content.clone();
@@ -962,7 +1106,11 @@ async fn handle_streaming(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        tracing::error!("Upstream streaming error ({}): {}", status, redact_secrets(&error_text));
+        tracing::error!(
+            "Upstream streaming error ({}): {}",
+            status,
+            redact_secrets(&error_text)
+        );
         return Err(ProxyError::Upstream(format!(
             "Upstream returned {}: {}",
             status, error_text
@@ -1481,7 +1629,11 @@ fn responses_to_openai(
 ) -> ProxyResult<openai::OpenAIRequest> {
     let mut messages = Vec::new();
 
-    if let Some(instructions) = req.instructions.as_ref().filter(|value| !value.trim().is_empty()) {
+    if let Some(instructions) = req
+        .instructions
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
         messages.push(openai::Message {
             role: "system".to_string(),
             content: Some(openai::MessageContent::Text(instructions.clone())),
@@ -1620,11 +1772,15 @@ fn responses_to_openai(
     }
 
     let tools = req.tools.as_ref().map(|tools| {
-        tools.iter()
+        tools
+            .iter()
             .filter(|tool| tool.get("type").and_then(|v| v.as_str()) == Some("function"))
             .filter_map(|tool| {
                 let name = tool.get("name").and_then(|v| v.as_str())?;
-                let parameters = tool.get("parameters").cloned().or_else(|| tool.get("input_schema").cloned());
+                let parameters = tool
+                    .get("parameters")
+                    .cloned()
+                    .or_else(|| tool.get("input_schema").cloned());
                 Some(openai::Tool {
                     tool_type: "function".to_string(),
                     function: openai::Function {
@@ -1641,24 +1797,27 @@ fn responses_to_openai(
             .collect::<Vec<_>>()
     });
 
-    let tool_choice = req.tool_choice.as_ref().and_then(|choice| {
-        if let Some(text) = choice.as_str() {
-            return Some(openai::ToolChoice::String(text.to_string()));
-        }
-        let choice_type = choice.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        match choice_type {
-            "auto" | "none" | "required" => Some(openai::ToolChoice::String(choice_type.to_string())),
-            "function" => choice.get("name").and_then(|v| v.as_str()).map(|name| {
-                openai::ToolChoice::Object {
-                    tool_type: "function".to_string(),
-                    function: openai::ToolChoiceFunction {
-                        name: tool_name_map.to_backend(name),
-                    },
+    let tool_choice =
+        req.tool_choice.as_ref().and_then(|choice| {
+            if let Some(text) = choice.as_str() {
+                return Some(openai::ToolChoice::String(text.to_string()));
+            }
+            let choice_type = choice.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match choice_type {
+                "auto" | "none" | "required" => {
+                    Some(openai::ToolChoice::String(choice_type.to_string()))
                 }
-            }),
-            _ => None,
-        }
-    });
+                "function" => choice.get("name").and_then(|v| v.as_str()).map(|name| {
+                    openai::ToolChoice::Object {
+                        tool_type: "function".to_string(),
+                        function: openai::ToolChoiceFunction {
+                            name: tool_name_map.to_backend(name),
+                        },
+                    }
+                }),
+                _ => None,
+            }
+        });
 
     Ok(openai::OpenAIRequest {
         model: model.to_string(),
@@ -1666,7 +1825,11 @@ fn responses_to_openai(
         max_tokens: None,
         temperature: None,
         top_p: None,
-        top_k: if profile.supports_top_k() { Some(40) } else { None },
+        top_k: if profile.supports_top_k() {
+            Some(40)
+        } else {
+            None
+        },
         stop: None,
         stream: req.stream,
         tools,
@@ -1690,15 +1853,24 @@ async fn handle_responses_non_streaming(
     reasoning_cache: SharedReasoningCache,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
-    let mut req_builder = client.post(&url).json(&openai_req).timeout(Duration::from_secs(300));
+    let mut req_builder = client
+        .post(&url)
+        .json(&openai_req)
+        .timeout(Duration::from_secs(300));
     if let Some(api_key) = &backend_key {
         req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
     }
     let response = req_builder.send().await.map_err(ProxyError::Http)?;
     if !response.status().is_success() {
         let status = response.status();
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(ProxyError::Upstream(format!("Upstream returned {}: {}", status, error_text)));
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status, error_text
+        )));
     }
     let openai_resp: openai::OpenAIResponse = response.json().await?;
     if let Some(choice) = openai_resp.choices.first() {
@@ -1718,7 +1890,12 @@ async fn handle_responses_non_streaming(
         .unwrap_or_else(|| openai_req.model.clone());
     let mut output = Vec::new();
     if let Some(choice) = openai_resp.choices.first() {
-        if let Some(text) = choice.message.content.as_ref().filter(|text| !text.is_empty()) {
+        if let Some(text) = choice
+            .message
+            .content
+            .as_ref()
+            .filter(|text| !text.is_empty())
+        {
             output.push(json!({
                 "type": "message",
                 "role": "assistant",
@@ -1758,15 +1935,24 @@ async fn handle_responses_streaming(
     reasoning_cache: SharedReasoningCache,
 ) -> ProxyResult<Response> {
     let url = config.chat_completions_url();
-    let mut req_builder = client.post(&url).json(&openai_req).timeout(Duration::from_secs(300));
+    let mut req_builder = client
+        .post(&url)
+        .json(&openai_req)
+        .timeout(Duration::from_secs(300));
     if let Some(api_key) = &backend_key {
         req_builder = req_builder.header("Authorization", format!("Bearer {}", api_key));
     }
     let response = req_builder.send().await.map_err(ProxyError::Http)?;
     if !response.status().is_success() {
         let status = response.status();
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(ProxyError::Upstream(format!("Upstream returned {}: {}", status, error_text)));
+        let error_text = response
+            .text()
+            .await
+            .unwrap_or_else(|_| "Unknown error".to_string());
+        return Err(ProxyError::Upstream(format!(
+            "Upstream returned {}: {}",
+            status, error_text
+        )));
     }
 
     let stream = response.bytes_stream();
@@ -1779,7 +1965,10 @@ async fn handle_responses_streaming(
     );
 
     let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", HeaderValue::from_static("text/event-stream"));
+    headers.insert(
+        "Content-Type",
+        HeaderValue::from_static("text/event-stream"),
+    );
     headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
     headers.insert("Connection", HeaderValue::from_static("keep-alive"));
     Ok((headers, Body::from_stream(sse_stream)).into_response())
@@ -2201,7 +2390,10 @@ impl fmt::Debug for Config {
             .field("port", &self.port)
             .field("rate_limit_per_minute", &self.rate_limit_per_minute)
             .field("stream_chunk_timeout_secs", &self.stream_chunk_timeout_secs)
-            .field("deepseek_anthropic_backend", &self.deepseek_anthropic_backend)
+            .field(
+                "deepseek_anthropic_backend",
+                &self.deepseek_anthropic_backend,
+            )
             .field("strict_model", &self.strict_model)
             .finish()
     }
@@ -2210,7 +2402,12 @@ impl fmt::Debug for Config {
 fn env_flag(name: &str) -> bool {
     std::env::var(name)
         .ok()
-        .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -2870,7 +3067,8 @@ mod tests {
             tools: Some(vec![openai::Tool {
                 tool_type: "function".to_string(),
                 function: openai::Function {
-                    name: "mcp__memory__memory_read__aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                    name: "mcp__memory__memory_read__aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        .to_string(),
                     description: None,
                     parameters: json!({}),
                 },

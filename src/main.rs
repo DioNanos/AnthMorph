@@ -23,7 +23,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
 #[command(name = "anthmorph")]
-#[command(about = "Responses-native Codex companion proxy")]
+#[command(about = "High-performance Rust API bridge for Codex and non-Responses AI APIs")]
 #[command(version)]
 struct Cli {
     #[arg(long)]
@@ -98,7 +98,10 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Backend Profile: {}", config.backend_profile.as_str());
     tracing::info!("Upstream API: {}", config.upstream_api.as_str());
     tracing::info!("Compat Mode: {}", config.compat_mode.as_str());
-    tracing::info!("DeepSeek Anthropic Backend: {}", config.deepseek_anthropic_backend);
+    tracing::info!(
+        "DeepSeek Anthropic Backend: {}",
+        config.deepseek_anthropic_backend
+    );
     tracing::info!("Strict Model: {}", config.strict_model);
     tracing::info!("Primary Model: {}", config.primary_model);
     if let Some(ref m) = config.reasoning_model {
@@ -116,16 +119,23 @@ async fn main() -> anyhow::Result<()> {
     let models_cache = model_cache::new_cache(&config.known_models());
     let reasoning_cache = Arc::new(RwLock::new(HashMap::<String, String>::new()));
 
-    let rate_limiter: Option<rate_limiter::SharedRateLimiter> = config
-        .rate_limit_per_minute
-        .map(|limit| {
-            tracing::info!("Rate limiting enabled: {} requests/minute per client", limit);
+    let rate_limiter: Option<rate_limiter::SharedRateLimiter> =
+        config.rate_limit_per_minute.map(|limit| {
+            tracing::info!(
+                "Rate limiting enabled: {} requests/minute per client",
+                limit
+            );
             Arc::new(rate_limiter::RateLimiter::new(limit))
         });
 
     // Initial model cache load
-    model_cache::refresh(&client, &config.models_url(), config.api_key.as_deref(), &models_cache)
-        .await;
+    model_cache::refresh(
+        &client,
+        &config.models_url(),
+        config.api_key.as_deref(),
+        &models_cache,
+    )
+    .await;
 
     // Background refresh every 60s with graceful shutdown
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -167,6 +177,16 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/v1/responses", post(proxy::responses_handler))
+        .route("/v1/messages", post(proxy::proxy_handler))
+        .route(
+            "/v1/messages/count_tokens",
+            post(proxy::count_tokens_handler),
+        )
+        .route(
+            "/v1/chat/completions",
+            post(proxy::chat_completions_handler),
+        )
+        .route("/chat/completions", post(proxy::chat_completions_handler))
         .route("/v1/models", axum::routing::get(proxy::models_handler))
         .route("/health", axum::routing::get(health_handler))
         .layer(Extension(config.clone()))

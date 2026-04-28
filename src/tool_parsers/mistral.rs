@@ -7,7 +7,6 @@
 //! Used with Mistral-7B, Devstral, and similar models.
 //! Reference: vllm-mlx `mistral_tool_parser.py`
 
-
 use super::{ExtractedToolCall, ExtractedToolCalls, ToolParser};
 
 static TOOL_CALL_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -20,7 +19,6 @@ fn next_tool_id() -> String {
 const BOT_TOKEN: &str = "[TOOL_CALLS]";
 
 pub struct MistralToolParser;
-
 
 impl Default for MistralToolParser {
     fn default() -> Self {
@@ -39,7 +37,10 @@ impl ToolParser for MistralToolParser {
         }
 
         let parts: Vec<&str> = model_output.splitn(2, BOT_TOKEN).collect();
-        let content = parts.first().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let content = parts
+            .first()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         let raw = parts.get(1).map(|s| s.trim()).unwrap_or("");
 
         let mut tool_calls = Vec::new();
@@ -75,7 +76,9 @@ impl ToolParser for MistralToolParser {
                         let name = obj.get("name").and_then(|v| v.as_str()).unwrap_or("");
                         let args = obj.get("arguments").or_else(|| obj.get("parameters"));
                         if !name.is_empty() {
-                            let args_str = args.map(|a| a.to_string()).unwrap_or_else(|| "{}".to_string());
+                            let args_str = args
+                                .map(|a| a.to_string())
+                                .unwrap_or_else(|| "{}".to_string());
                             tool_calls.push(ExtractedToolCall {
                                 id: next_tool_id(),
                                 name: name.to_string(),

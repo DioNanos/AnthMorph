@@ -26,7 +26,7 @@ The 0.2.x package is a Codex companion daemon. The public runtime surface is:
 - `GET /v1/models`
 - `GET /health`
 
-The package should not document or expose public `/chat/completions`, `/v1/messages`, or token-count ingress as supported runtime APIs. `ANTHMORPH_UPSTREAM_API=chat-completions` is allowed only as an internal backend adapter for providers that do not expose `/responses`.
+The package exposes three public compatibility surfaces: Codex/codex-vl `/v1/responses`, Anthropic Messages `/v1/messages`, and OpenAI legacy chat `/v1/chat/completions`. `ANTHMORPH_UPSTREAM_API=chat-completions` remains the backend adapter for providers that do not expose `/responses`.
 
 ## Docker Build
 

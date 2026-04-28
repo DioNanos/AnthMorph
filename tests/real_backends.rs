@@ -224,7 +224,10 @@ fn post_responses(server: &TestServer, payload: &Value) -> (u16, Value) {
         .expect("run curl responses request");
 
     let status_text = String::from_utf8(output.stdout).expect("status utf8");
-    let status = status_text.trim().parse::<u16>().expect("parse status code");
+    let status = status_text
+        .trim()
+        .parse::<u16>()
+        .expect("parse status code");
     let body = fs::read_to_string(&body_path).expect("read responses body");
     let value: Value = serde_json::from_str(&body).unwrap_or_else(|err| {
         panic!("parse responses body as json failed: {err}; status={status}; body={body}")
@@ -280,7 +283,9 @@ fn is_auth_provider_failure(status: u16, body: &str) -> bool {
         return false;
     }
     let body_lower = body.to_ascii_lowercase();
-    body_lower.contains("invalid") || body_lower.contains("unauthorized") || body_lower.contains("authentication")
+    body_lower.contains("invalid")
+        || body_lower.contains("unauthorized")
+        || body_lower.contains("authentication")
 }
 
 fn post_messages_with_retry(server: &TestServer, payload: &Value) -> Option<(u16, Value)> {
@@ -415,7 +420,8 @@ fn expect_text_response_with_retry(server: &TestServer, expected_fragment: &str)
         let text = response["content"]
             .as_array()
             .and_then(|items| {
-                items.iter()
+                items
+                    .iter()
                     .find_map(|item| item.get("text").and_then(Value::as_str))
             })
             .unwrap_or("")
@@ -616,7 +622,11 @@ fn deepseek_real_backend_smoke() {
     }
     let text = response["content"]
         .as_array()
-        .and_then(|items| items.iter().find_map(|item| item.get("text").and_then(Value::as_str)))
+        .and_then(|items| {
+            items
+                .iter()
+                .find_map(|item| item.get("text").and_then(Value::as_str))
+        })
         .unwrap_or("")
         .trim()
         .to_string();
@@ -655,6 +665,7 @@ fn deepseek_long_tool_names_are_shortened_for_claude_path() {
 }
 
 #[test]
+#[ignore = "live DeepSeek /responses endpoint is provider-dependent; run explicitly with DEEPSEEK_API_KEY"]
 fn deepseek_responses_path_smoke() {
     let Some(api_key) = require_env("DEEPSEEK_API_KEY") else {
         return;

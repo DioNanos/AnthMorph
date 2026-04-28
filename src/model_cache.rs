@@ -1,7 +1,7 @@
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -39,7 +39,10 @@ pub fn new_cache(seeded_models: &[String]) -> Cache {
 fn dedupe_models(models: Vec<ModelInfo>) -> Vec<ModelInfo> {
     let mut out = Vec::new();
     for model in models {
-        if !out.iter().any(|existing: &ModelInfo| existing.id == model.id) {
+        if !out
+            .iter()
+            .any(|existing: &ModelInfo| existing.id == model.id)
+        {
             out.push(model);
         }
     }
@@ -68,7 +71,8 @@ pub async fn refresh(client: &Client, models_url: &str, api_key: Option<&str>, s
             })
             .unwrap_or_default();
         Ok(models)
-    }.await;
+    }
+    .await;
 
     match result {
         Ok(models) => {
@@ -87,7 +91,11 @@ pub async fn refresh(client: &Client, models_url: &str, api_key: Option<&str>, s
         Err(e) => {
             let failures = state.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
             if failures >= 5 {
-                tracing::error!("Model cache refresh failed {} consecutive times: {}", failures, e);
+                tracing::error!(
+                    "Model cache refresh failed {} consecutive times: {}",
+                    failures,
+                    e
+                );
                 state.consecutive_failures.store(0, Ordering::Relaxed);
             } else {
                 tracing::warn!("Model cache refresh failed (attempt {}): {}", failures, e);

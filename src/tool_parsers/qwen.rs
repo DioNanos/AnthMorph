@@ -68,7 +68,9 @@ impl ToolParser for QwenToolParser {
                 let name = data.get("name").and_then(|v| v.as_str()).unwrap_or("");
                 let args = data.get("arguments").or_else(|| data.get("parameters"));
                 if !name.is_empty() {
-                    let args_str = args.map(|a| a.to_string()).unwrap_or_else(|| "{}".to_string());
+                    let args_str = args
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "{}".to_string());
                     tool_calls.push(ExtractedToolCall {
                         id: next_tool_id(),
                         name: name.to_string(),
@@ -86,7 +88,9 @@ impl ToolParser for QwenToolParser {
             for caps in self.function_pattern.captures_iter(model_output) {
                 let name = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
                 let params_block = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-                if name.is_empty() { continue; }
+                if name.is_empty() {
+                    continue;
+                }
 
                 // Try JSON arguments first
                 let trimmed = params_block.trim();
@@ -107,14 +111,16 @@ impl ToolParser for QwenToolParser {
                     let key = p_caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
                     let val = p_caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
                     if !key.is_empty() {
-                        arguments.insert(key.to_string(), serde_json::Value::String(val.to_string()));
+                        arguments
+                            .insert(key.to_string(), serde_json::Value::String(val.to_string()));
                     }
                 }
                 if !arguments.is_empty() {
                     tool_calls.push(ExtractedToolCall {
                         id: next_tool_id(),
                         name: name.to_string(),
-                        arguments: serde_json::to_string(&arguments).unwrap_or_else(|_| "{}".to_string()),
+                        arguments: serde_json::to_string(&arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
                     });
                 } else if !trimmed.is_empty() {
                     tool_calls.push(ExtractedToolCall {
@@ -128,7 +134,11 @@ impl ToolParser for QwenToolParser {
 
         let content = if !tool_calls.is_empty() {
             let c = cleaned.trim();
-            if c.is_empty() { None } else { Some(c.to_string()) }
+            if c.is_empty() {
+                None
+            } else {
+                Some(c.to_string())
+            }
         } else {
             Some(model_output.to_string())
         };
@@ -159,7 +169,8 @@ mod tests {
     #[test]
     fn extracts_xml_format() {
         let parser = QwenToolParser::default();
-        let output = r#"<tool_call>{"name": "get_weather", "arguments": {"city": "London"}}</tool_call>"#;
+        let output =
+            r#"<tool_call>{"name": "get_weather", "arguments": {"city": "London"}}</tool_call>"#;
         let result = parser.extract_tool_calls(output);
         assert!(result.tools_called);
         assert_eq!(result.tool_calls[0].name, "get_weather");

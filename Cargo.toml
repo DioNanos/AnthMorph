@@ -2,7 +2,7 @@
 name = "AnthMorph"
 version = "0.2.0"
 edition = "2021"
-description = "Responses-native Codex companion proxy"
+description = "High-performance Rust API bridge for Codex, Anthropic, OpenAI chat, and Responses"
 license = "MIT"
 repository = "https://github.com/DioNanos/AnthMorph"
 homepage = "https://github.com/DioNanos/AnthMorph"

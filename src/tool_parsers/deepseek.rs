@@ -71,7 +71,8 @@ impl ToolParser for DeepSeekToolParser {
         // Check for the end marker (tool calls completed)
         let calls_start = "<\u{ff5c}tool\u{2581}calls\u{2581}begin\u{ff5c}>";
 
-        let has_calls = model_output.contains(calls_start) || model_output.contains(TOOL_CALL_START);
+        let has_calls =
+            model_output.contains(calls_start) || model_output.contains(TOOL_CALL_START);
 
         if !has_calls {
             return ExtractedToolCalls {
@@ -138,9 +139,7 @@ mod tests {
         let sep = "<\u{ff5c}tool\u{2581}sep\u{ff5c}>";
         let end = "<\u{ff5c}tool\u{2581}call\u{2581}end\u{ff5c}>";
         let calls_end = "<\u{ff5c}tool\u{2581}calls\u{2581}end\u{ff5c}>";
-        format!(
-            "{start}function{sep}{name}\n```json\n{args_json}\n```{end}{calls_end}"
-        )
+        format!("{start}function{sep}{name}\n```json\n{args_json}\n```{end}{calls_end}")
     }
 
     #[test]

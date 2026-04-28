@@ -27,12 +27,11 @@ pub struct Glm47ToolParser {
 impl Default for Glm47ToolParser {
     fn default() -> Self {
         Self {
-            func_detail_pattern: Regex::new(
-                r"<tool_call>\s*([\s\S]+?)</tool_call>"
-            ).unwrap(),
+            func_detail_pattern: Regex::new(r"<tool_call>\s*([\s\S]+?)</tool_call>").unwrap(),
             arg_pattern: Regex::new(
-                r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>"
-            ).unwrap(),
+                r"<arg_key>\s*(.*?)\s*</arg_key>\s*<arg_value>(.*?)</arg_value>",
+            )
+            .unwrap(),
         }
     }
 }
@@ -52,7 +51,9 @@ impl ToolParser for Glm47ToolParser {
 
         for caps in self.func_detail_pattern.captures_iter(model_output) {
             let inner = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-            if inner.is_empty() { continue; }
+            if inner.is_empty() {
+                continue;
+            }
 
             // First line is function name, rest is arg definitions
             let (raw_name, args_section) = if let Some(pos) = inner.find('<') {
@@ -61,7 +62,9 @@ impl ToolParser for Glm47ToolParser {
                 (inner.to_string(), String::new())
             };
 
-            if raw_name.is_empty() { continue; }
+            if raw_name.is_empty() {
+                continue;
+            }
 
             let mut arguments = serde_json::Map::new();
             for a_caps in self.arg_pattern.captures_iter(&args_section) {
@@ -82,7 +85,10 @@ impl ToolParser for Glm47ToolParser {
         }
 
         if !tool_calls.is_empty() {
-            cleaned = self.func_detail_pattern.replace_all(&cleaned, "").to_string();
+            cleaned = self
+                .func_detail_pattern
+                .replace_all(&cleaned, "")
+                .to_string();
         }
 
         let tools_called = !tool_calls.is_empty();
@@ -91,14 +97,17 @@ impl ToolParser for Glm47ToolParser {
             tool_calls,
             content: if tools_called {
                 let c = cleaned.trim();
-                if c.is_empty() { None } else { Some(c.to_string()) }
+                if c.is_empty() {
+                    None
+                } else {
+                    Some(c.to_string())
+                }
             } else {
                 Some(model_output.to_string())
             },
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

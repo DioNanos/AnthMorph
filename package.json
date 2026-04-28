@@ -1,7 +1,7 @@
 {
   "name": "@mmmbuto/anthmorph",
   "version": "0.2.0",
-  "description": "Responses-native Codex companion proxy for OpenAI-compatible backends",
+  "description": "High-performance Rust API bridge for Codex, Anthropic, OpenAI chat, and Responses",
   "license": "MIT",
   "author": "Davide A. Guglielmi",
   "bin": {
@@ -25,6 +25,7 @@
     "scripts/test_claude_code_patterns_real.sh",
     "src/",
     "docs/CLAUDE_CODE_SETUP.md",
+    "docs/GITHUB_ABOUT.md",
     "docs/PACKAGING.md",
     "docs/RELEASE.md",
     "Cargo.toml",
@@ -49,8 +50,13 @@
   "keywords": [
     "anthropic",
     "claude",
+    "codex",
+    "codex-vl",
     "proxy",
+    "responses-api",
     "chutes",
+    "openai",
+    "chat-completions",
     "openai-compatible",
     "termux",
     "rust"

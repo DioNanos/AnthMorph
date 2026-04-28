@@ -47,7 +47,8 @@ impl ToolParser for KimiToolParser {
         }
 
         // Extract content before first tool call marker
-        let content = model_output.find("<|tool_call_begin|>")
+        let content = model_output
+            .find("<|tool_call_begin|>")
             .or_else(|| model_output.find("<|tool_calls_section_begin|>"))
             .and_then(|pos| {
                 if pos > 0 {
@@ -89,7 +90,11 @@ impl ToolParser for KimiToolParser {
         ExtractedToolCalls {
             tools_called,
             tool_calls,
-            content: if tools_called { content } else { Some(model_output.to_string()) },
+            content: if tools_called {
+                content
+            } else {
+                Some(model_output.to_string())
+            },
         }
     }
 }

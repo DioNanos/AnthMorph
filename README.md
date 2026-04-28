@@ -5,28 +5,36 @@
 [![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
 
-AnthMorph is a small Rust daemon for Codex and codex-vl. It accepts OpenAI Responses API traffic locally, applies lightweight governance, model normalization, auth, rate limiting, and provider quirks, then forwards to the selected backend.
+AnthMorph is a high-performance Rust API bridge for modern AI coding clients.
+Its main job is to let Codex and codex-vl use providers that do not expose the
+latest OpenAI `/responses` API by translating, normalizing, and streaming across
+Anthropic Messages, OpenAI legacy chat-completions, and Responses-style traffic.
 
-The 0.2.x line is intentionally simple: one optimized Codex ingress and no public chat or Anthropic compatibility routes. Backends can be native Responses providers or legacy OpenAI-compatible chat providers selected by `ANTHMORPH_UPSTREAM_API`.
+Use it when a provider is powerful but speaks the wrong wire format for your
+client. AnthMorph keeps the local client surface stable, adapts model names and
+tool calls, applies local auth/rate-limit policy, and forwards to the selected
+backend with minimal runtime overhead.
 
 ## Project Status
 
 - Current line: `0.2.0`
-- Public generation API: `POST /v1/responses`
+- Primary Codex API: `POST /v1/responses`
+- Anthropic ingress: `POST /v1/messages`, `POST /v1/messages/count_tokens`
+- OpenAI legacy ingress: `POST /v1/chat/completions`, `POST /chat/completions`
 - Operational APIs: `GET /v1/models`, `GET /health`
-- Target clients: Codex and codex-vl with `wire_api = "responses"`
-- Target platforms: Linux, macOS, and Termux
-- Target backends: OpenAI-compatible Responses providers and legacy chat-completions providers behind the same Codex-facing `/v1/responses` ingress
+- Target clients: Codex and codex-vl latest, plus Anthropic/OpenAI-compatible clients
+- Target platforms: macOS, Linux, and Termux
 
 ## What It Does
 
-- Exposes only the Codex-friendly Responses generation surface: `/v1/responses`
-- Keeps public client traffic Responses-native; legacy chat-completions translation is only an internal backend adapter when explicitly selected
-- Forwards upstream streaming as Server-Sent Events when `stream: true`
-- Normalizes configured/default models for clients that send `default` or Claude-style model names
-- Shortens long function tool names for providers with stricter tool-name limits
-- Supports local ingress auth, backend API key forwarding, CORS allow-lists, and per-client rate limiting
-- Serves `/v1/models` from backend discovery plus local fallback model cache
+- Translates Codex/codex-vl Responses traffic to native Responses or legacy chat-completions backends.
+- Accepts Anthropic Messages API traffic and adapts it to OpenAI-compatible or Anthropic-compatible backends.
+- Accepts OpenAI legacy chat-completions traffic for clients and tools that still use `/chat/completions`.
+- Streams Server-Sent Events for supported streaming paths.
+- Normalizes configured/default models for clients that send `default` or Claude-style model names.
+- Shortens long function/tool names for providers with stricter tool-name limits.
+- Supports local ingress auth, backend API key forwarding, CORS allow-lists, and per-client rate limiting.
+- Serves `/v1/models` from backend discovery plus a local fallback model cache.
 
 ## Install
 
@@ -42,51 +50,65 @@ Local source build:
 cargo build --release
 ```
 
-Run directly:
+Run against a legacy OpenAI-compatible chat backend:
 
 ```bash
-ANTHMORPH_BACKEND_URL=https://integrate.api.nvidia.com/v1 \
+ANTHMORPH_BACKEND_URL=https://api.example.com/v1 \
 ANTHMORPH_BACKEND_PROFILE=openai-generic \
 ANTHMORPH_UPSTREAM_API=chat-completions \
-ANTHMORPH_PRIMARY_MODEL=deepseek-ai/deepseek-v4-pro \
-ANTHMORPH_API_KEY="$NVIDIA_API_KEY" \
+ANTHMORPH_PRIMARY_MODEL=example/model \
+ANTHMORPH_API_KEY="$PROVIDER_API_KEY" \
 PORT=9876 \
 anthmorph
 ```
 
-## Codex Provider
+Run against a native Responses backend:
+
+```bash
+ANTHMORPH_BACKEND_URL=https://api.example.com/v1 \
+ANTHMORPH_BACKEND_PROFILE=openai-generic \
+ANTHMORPH_UPSTREAM_API=responses \
+ANTHMORPH_PRIMARY_MODEL=example/model \
+ANTHMORPH_API_KEY="$PROVIDER_API_KEY" \
+PORT=9876 \
+anthmorph
+```
+
+## Codex and codex-vl
 
 Point Codex or codex-vl at AnthMorph with Responses wire format:
 
 ```toml
-model = "deepseek-ai/deepseek-v4-pro"
-model_provider = "nvidia-anthmorph"
+model = "example/model"
+model_provider = "anthmorph"
 
-[model_providers.nvidia-anthmorph]
-name = "NVIDIA via AnthMorph"
+[model_providers.anthmorph]
+name = "Provider via AnthMorph"
 base_url = "http://127.0.0.1:9876/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 requires_openai_auth = false
 ```
 
-For native Responses backends, AnthMorph forwards generation calls to:
+Codex sends `/v1/responses` to AnthMorph. AnthMorph then chooses the configured
+upstream mode:
 
 ```text
-{ANTHMORPH_BACKEND_URL}/responses
+ANTHMORPH_UPSTREAM_API=responses          -> {BACKEND_URL}/responses
+ANTHMORPH_UPSTREAM_API=chat-completions   -> {BACKEND_URL}/chat/completions
 ```
-
-For legacy providers such as NVIDIA NIM, set `ANTHMORPH_UPSTREAM_API=chat-completions`. AnthMorph still exposes only `/v1/responses` to Codex and performs the backend adaptation internally.
 
 ## Runtime Surface
 
 ```text
 POST http://127.0.0.1:9876/v1/responses
+POST http://127.0.0.1:9876/v1/messages
+POST http://127.0.0.1:9876/v1/messages/count_tokens
+POST http://127.0.0.1:9876/v1/chat/completions
+POST http://127.0.0.1:9876/chat/completions
 GET  http://127.0.0.1:9876/v1/models
 GET  http://127.0.0.1:9876/health
 ```
-
-`/v1/messages`, `/v1/messages/count_tokens`, and public chat ingress are not part of the 0.2.x runtime surface.
 
 ## Environment
 
@@ -94,10 +116,10 @@ Minimum direct environment:
 
 ```bash
 PORT=9876
-ANTHMORPH_BACKEND_URL=https://integrate.api.nvidia.com/v1
+ANTHMORPH_BACKEND_URL=https://api.example.com/v1
 ANTHMORPH_BACKEND_PROFILE=openai-generic
 ANTHMORPH_UPSTREAM_API=chat-completions
-ANTHMORPH_PRIMARY_MODEL=deepseek-ai/deepseek-v4-pro
+ANTHMORPH_PRIMARY_MODEL=example/model
 ANTHMORPH_API_KEY=...
 ```
 
@@ -109,6 +131,7 @@ ANTHMORPH_INGRESS_API_KEY=...
 ANTHMORPH_ALLOWED_ORIGINS=https://example.test
 ANTHMORPH_RATE_LIMIT_PER_MINUTE=60
 ANTHMORPH_STRICT_MODEL=true
+ANTHMORPH_STREAM_CHUNK_TIMEOUT_SECS=30
 ```
 
 ## Validation

@@ -77,7 +77,10 @@ mod tests {
 
     #[test]
     fn leaves_short_name_unchanged() {
-        assert_eq!(shorten_tool_name("mcp__memory__read", 64), "mcp__memory__read");
+        assert_eq!(
+            shorten_tool_name("mcp__memory__read", 64),
+            "mcp__memory__read"
+        );
     }
 
     #[test]

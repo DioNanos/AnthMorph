@@ -179,12 +179,14 @@ pub fn anthropic_to_openai(
             // Strip x-anthropic-billing-header injected by Claude Code per-turn.
             // These headers contain a per-request hash that prevents prefix-cache
             // reuse across turn boundaries.
-            static BILLING_HEADER_RE: std::sync::LazyLock<Regex> =
-                std::sync::LazyLock::new(|| {
-                    Regex::new(r"(?m)^x-anthropic-billing-header:[^
+            static BILLING_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                Regex::new(
+                    r"(?m)^x-anthropic-billing-header:[^
 ]*
-?").unwrap()
-                });
+?",
+                )
+                .unwrap()
+            });
             let system_text = BILLING_HEADER_RE.replace_all(&system_text, "").to_string();
             openai_messages.push(openai::Message {
                 role: "system".to_string(),
@@ -550,7 +552,10 @@ pub fn openai_to_anthropic(
         }
     }
 
-    if choice.message.reasoning_content.is_none() && !embedded_reasoning.is_empty() && profile.supports_reasoning() {
+    if choice.message.reasoning_content.is_none()
+        && !embedded_reasoning.is_empty()
+        && profile.supports_reasoning()
+    {
         for reasoning in embedded_reasoning {
             content.push(anthropic::ResponseContent::Thinking {
                 thinking: reasoning,
@@ -564,19 +569,18 @@ pub fn openai_to_anthropic(
 
     if let Some(tool_calls) = &choice.message.tool_calls {
         for tool_call in tool_calls {
-            let input: Value =
-                match serde_json::from_str(&tool_call.function.arguments) {
-                    Ok(v) => v,
-                    Err(err) => {
-                        tracing::warn!(
-                            tool_id = %tool_call.id,
-                            tool_name = %tool_call.function.name,
-                            error = %err,
-                            "tool_call.arguments is not valid JSON, forwarding as empty object"
-                        );
-                        json!({})
-                    }
-                };
+            let input: Value = match serde_json::from_str(&tool_call.function.arguments) {
+                Ok(v) => v,
+                Err(err) => {
+                    tracing::warn!(
+                        tool_id = %tool_call.id,
+                        tool_name = %tool_call.function.name,
+                        error = %err,
+                        "tool_call.arguments is not valid JSON, forwarding as empty object"
+                    );
+                    json!({})
+                }
+            };
 
             content.push(anthropic::ResponseContent::ToolUse {
                 id: tool_call.id.clone(),
@@ -665,15 +669,14 @@ mod tests {
     #[test]
     fn keeps_top_k_for_chutes_profile() {
         let req = sample_request();
-        let transformed =
-            anthropic_to_openai(
-                req,
-                "model",
-                BackendProfile::Chutes,
-                CompatMode::Strict,
-                &ToolNameMap::identity(),
-            )
-            .unwrap();
+        let transformed = anthropic_to_openai(
+            req,
+            "model",
+            BackendProfile::Chutes,
+            CompatMode::Strict,
+            &ToolNameMap::identity(),
+        )
+        .unwrap();
         assert_eq!(transformed.top_k, Some(40));
     }
 
@@ -694,7 +697,7 @@ mod tests {
             CompatMode::Strict,
             &ToolNameMap::identity(),
         )
-            .unwrap_err();
+        .unwrap_err();
         assert!(err.to_string().contains("thinking blocks"));
     }
 
@@ -726,15 +729,14 @@ mod tests {
             extra: Default::default(),
         };
 
-        let out =
-            anthropic_to_openai(
-                req,
-                "model",
-                BackendProfile::Chutes,
-                CompatMode::Strict,
-                &ToolNameMap::identity(),
-            )
-            .unwrap();
+        let out = anthropic_to_openai(
+            req,
+            "model",
+            BackendProfile::Chutes,
+            CompatMode::Strict,
+            &ToolNameMap::identity(),
+        )
+        .unwrap();
         assert_eq!(out.messages[0].role, "system");
         match out.messages[0].content.as_ref().unwrap() {
             openai::MessageContent::Text(text) => assert_eq!(text, "one\n\ntwo"),
@@ -769,7 +771,7 @@ mod tests {
             CompatMode::Strict,
             &ToolNameMap::identity(),
         )
-            .unwrap();
+        .unwrap();
         match &out.content[0] {
             anthropic::ResponseContent::Thinking { thinking } => assert_eq!(thinking, "chain"),
             other => panic!("expected thinking block, got {other:?}"),
@@ -963,10 +965,19 @@ mod tests {
 
     #[test]
     fn map_stop_reason_covers_all_cases() {
-        assert_eq!(map_stop_reason(Some("tool_calls")), Some("tool_use".to_string()));
+        assert_eq!(
+            map_stop_reason(Some("tool_calls")),
+            Some("tool_use".to_string())
+        );
         assert_eq!(map_stop_reason(Some("stop")), Some("end_turn".to_string()));
-        assert_eq!(map_stop_reason(Some("length")), Some("max_tokens".to_string()));
-        assert_eq!(map_stop_reason(Some("content_filter")), Some("end_turn".to_string()));
+        assert_eq!(
+            map_stop_reason(Some("length")),
+            Some("max_tokens".to_string())
+        );
+        assert_eq!(
+            map_stop_reason(Some("content_filter")),
+            Some("end_turn".to_string())
+        );
         assert_eq!(map_stop_reason(None), None);
     }
 

@@ -11,6 +11,12 @@ All notable changes to this project will be documented in this file.
 - added regression coverage proving the Responses payload stays Responses-shaped and does not synthesize chat `messages`
 - updated docs and package metadata for the 0.2.0 Responses-native line
 
+## develop
+
+- restored public Anthropic Messages compatibility routes: `POST /v1/messages` and `POST /v1/messages/count_tokens`
+- added public OpenAI legacy chat ingress: `POST /v1/chat/completions` and `POST /chat/completions`
+- repositioned AnthMorph as a high-performance Rust bridge for Codex/codex-vl latest, Anthropic Messages, OpenAI legacy chat, and Responses traffic
+
 ## 0.1.5
 
 - refocused the public README around AnthMorph as a local agent router with DeepSeek V4 support
