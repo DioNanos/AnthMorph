@@ -1,9 +1,12 @@
 # AnthMorph
 
-[![Status](https://img.shields.io/badge/Status-0.2.0-blue.svg)](#project-status)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/Rust-1.94%2B-orange.svg)](https://www.rust-lang.org)
+[![Release](https://img.shields.io/github/v/release/DioNanos/AnthMorph?style=flat-square&logo=github)](https://github.com/DioNanos/AnthMorph/releases)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.94%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
+[![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Termux-2ea44f?style=flat-square)](#install)
+[![API](https://img.shields.io/badge/api-Responses%20%7C%20Messages%20%7C%20Chat-2563eb?style=flat-square)](#project-status)
+[![Local First](https://img.shields.io/badge/local--first-no%20external%20deps-111827?style=flat-square)](#what-it-does)
 
 AnthMorph is a high-performance Rust API bridge for modern AI coding clients.
 Its main job is to let Codex and codex-vl use providers that do not expose the
