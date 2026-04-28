@@ -1,0 +1,1075 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_PATH=$(readlink -f -- "$0" 2>/dev/null || printf "%s" "$0")
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
+HOME_CONFIG_DIR=${HOME}/.config/anthmorph
+LOCAL_STATE_DIR=$ROOT_DIR/.anthmorph
+CONFIG_FILE_DEFAULT=$HOME_CONFIG_DIR/config.toml
+if [ -f "$LOCAL_STATE_DIR/config.toml" ] && [ ! -f "$CONFIG_FILE_DEFAULT" ]; then
+  CONFIG_FILE=$LOCAL_STATE_DIR/config.toml
+else
+  CONFIG_FILE=${ANTHMORPH_CONFIG_FILE:-$CONFIG_FILE_DEFAULT}
+fi
+STATE_DIR=$(dirname "$CONFIG_FILE")
+LEGACY_ENV_FILE=$STATE_DIR/config.env
+PID_FILE=$STATE_DIR/anthmorph.pid
+LOG_FILE=$STATE_DIR/anthmorph.log
+PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
+if [ -x "$PREBUILT_BIN" ]; then
+  BIN_PATH_DEFAULT=$PREBUILT_BIN
+else
+  BIN_PATH_DEFAULT=$ROOT_DIR/target/release/anthmorph
+fi
+SECRET_HELPER=$ROOT_DIR/scripts/anthmorph-secret
+if [ -x /opt/homebrew/bin/python3 ]; then
+  PYTHON_BIN=/opt/homebrew/bin/python3
+else
+  PYTHON_BIN=python3
+fi
+LAUNCHD_LABEL=com.mmmbuto.anthmorph
+LAUNCHD_PLIST=$HOME/Library/LaunchAgents/$LAUNCHD_LABEL.plist
+SYSTEMD_UNIT=$HOME/.config/systemd/user/anthmorph.service
+
+mkdir -p "$STATE_DIR"
+
+usage() {
+  cat <<USAGE
+usage:
+  anthmorphctl config bootstrap
+  anthmorphctl config show
+  anthmorphctl init responses|chat [options]
+  anthmorphctl wizard [PROFILE]
+  anthmorphctl doctor [PROFILE]
+  anthmorphctl profile list
+  anthmorphctl profile use NAME
+  anthmorphctl model probe [PROFILE]
+  anthmorphctl key set PROFILE
+  anthmorphctl key test PROFILE
+  anthmorphctl key delete PROFILE
+  anthmorphctl key list
+  anthmorphctl set key-env ENV_NAME
+  anthmorphctl set key VALUE --save
+  anthmorphctl unset key
+  anthmorphctl start
+  anthmorphctl stop
+  anthmorphctl restart
+  anthmorphctl status
+  anthmorphctl logs
+  anthmorphctl print-config
+  anthmorphctl bootstrap messages-client [options]
+  anthmorphctl bootstrap codex [options]
+  anthmorphctl service install|uninstall|enable|disable|restart|status
+  anthmorphctl help
+
+options for init:
+  --port PORT
+  --compat-mode strict|compat
+  --reasoning-model MODEL
+  --ingress-api-key VALUE
+  --allow-origin ORIGIN
+  --key-env ENV_NAME
+  --api-key VALUE --save-key
+
+options for bootstrap messages-client:
+  --write
+  --base-url URL
+  --token VALUE
+  --model MODEL
+  --timeout-ms MS
+
+options for bootstrap codex:
+  --write
+  --base-url URL
+  --provider-name NAME
+  --model MODEL
+
+notes:
+  - canonical config: ~/.config/anthmorph/config.toml
+  - local dev fallback: .anthmorph/config.toml
+  - presets are generic and must be configured with your provider URL, model, and key env
+USAGE
+}
+
+ensure_config() {
+  if [ ! -f "$CONFIG_FILE" ]; then
+    "$PYTHON_BIN" "$ROOT_DIR/scripts/write_default_config.py" "$CONFIG_FILE"
+  fi
+}
+
+write_legacy_env() {
+  cat >"$LEGACY_ENV_FILE" <<EOF
+BACKEND_PROFILE=${BACKEND_PROFILE:-}
+COMPAT_MODE=${COMPAT_MODE:-compat}
+BACKEND_URL=${BACKEND_URL:-}
+PRIMARY_MODEL=${PRIMARY_MODEL:-}
+REASONING_MODEL=${REASONING_MODEL:-}
+FALLBACK_MODELS=
+PORT=${PORT:-3108}
+INGRESS_API_KEY=${INGRESS_API_KEY:-}
+ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+API_KEY_ENV=${API_KEY_ENV:-}
+API_KEY=${API_KEY:-}
+SECRET_REF=${SECRET_REF:-}
+DEEPSEEK_ANTHROPIC_BACKEND=${DEEPSEEK_ANTHROPIC_BACKEND:-}
+STRICT_MODEL=${STRICT_MODEL:-}
+BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
+ACTIVE_PROFILE=${ACTIVE_PROFILE:-}
+EOF
+}
+
+load_config() {
+  ensure_config
+  eval "$(
+    CONFIG_FILE="$CONFIG_FILE" "$PYTHON_BIN" - <<'PY'
+import os, shlex, tomllib
+from pathlib import Path
+
+path = Path(os.environ["CONFIG_FILE"])
+data = tomllib.loads(path.read_text())
+server = data.get("server", {})
+runtime = data.get("runtime", {})
+active = runtime.get("active_profile", "responses_provider")
+profiles = data.get("profiles", {})
+profile = profiles.get(active, {})
+
+def emit(name, value):
+    if value is None:
+        value = ""
+    print(f"{name}={shlex.quote(str(value))}")
+
+emit("ACTIVE_PROFILE", active)
+emit("BACKEND_PROFILE", profile.get("backend", "openai-generic"))
+emit("UPSTREAM_API", profile.get("upstream_api", "responses"))
+emit("BACKEND_URL", profile.get("base_url", "https://api.example.com/v1"))
+emit("PRIMARY_MODEL", profile.get("model", "example/responses-model"))
+emit("REASONING_MODEL", profile.get("reasoning_model", profile.get("model", "")))
+emit("DEEPSEEK_ANTHROPIC_BACKEND", profile.get("deepseek_anthropic_backend", False))
+emit("STRICT_MODEL", profile.get("strict_model", False))
+emit("API_KEY_ENV", profile.get("api_key_env", ""))
+emit("API_KEY", profile.get("api_key", ""))
+emit("SECRET_REF", profile.get("secret_ref", ""))
+emit("PORT", server.get("port", 3108))
+emit("COMPAT_MODE", server.get("compat_mode", "compat"))
+emit("INGRESS_API_KEY", server.get("ingress_api_key", ""))
+origins = server.get("allow_origins", [])
+if isinstance(origins, list):
+    origins = ",".join(origins)
+emit("ALLOWED_ORIGINS", origins)
+emit("BIN_PATH", server.get("bin_path", ""))
+emit("STREAM_CHUNK_TIMEOUT_SECS", server.get("stream_chunk_timeout_secs", 30))
+PY
+  )"
+  BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
+  if [ "$BIN_PATH" = "$ROOT_DIR/target/release/anthmorph" ]; then
+    BIN_PATH=$BIN_PATH_DEFAULT
+  fi
+  write_legacy_env
+}
+
+save_config_values() {
+  ensure_config
+  ACTIVE_PROFILE=${ACTIVE_PROFILE:-responses_provider}
+  PORT=${PORT:-3108}
+  COMPAT_MODE=${COMPAT_MODE:-compat}
+  BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
+  CONFIG_FILE="$CONFIG_FILE" \
+  ACTIVE_PROFILE="$ACTIVE_PROFILE" \
+  PORT="$PORT" \
+  COMPAT_MODE="$COMPAT_MODE" \
+  STREAM_CHUNK_TIMEOUT_SECS="${STREAM_CHUNK_TIMEOUT_SECS:-30}" \
+  INGRESS_API_KEY="${INGRESS_API_KEY:-}" \
+  ALLOWED_ORIGINS="${ALLOWED_ORIGINS:-}" \
+  BIN_PATH="$BIN_PATH" \
+  BACKEND_PROFILE="${BACKEND_PROFILE:-}" \
+  UPSTREAM_API="${UPSTREAM_API:-}" \
+  BACKEND_URL="${BACKEND_URL:-}" \
+  PRIMARY_MODEL="${PRIMARY_MODEL:-}" \
+  REASONING_MODEL="${REASONING_MODEL:-}" \
+  DEEPSEEK_ANTHROPIC_BACKEND="${DEEPSEEK_ANTHROPIC_BACKEND:-}" \
+  STRICT_MODEL="${STRICT_MODEL:-}" \
+  API_KEY_ENV="${API_KEY_ENV:-}" \
+  API_KEY="${API_KEY:-}" \
+  SECRET_REF="${SECRET_REF:-}" \
+  "$PYTHON_BIN" - <<'PY'
+import os
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    print("python3 tomllib support required", file=sys.stderr)
+    raise
+
+config_path = Path(os.environ["CONFIG_FILE"])
+data = tomllib.loads(config_path.read_text()) if config_path.exists() else {}
+server = data.setdefault("server", {})
+runtime = data.setdefault("runtime", {})
+profiles = data.setdefault("profiles", {})
+
+active = os.environ["ACTIVE_PROFILE"]
+profile = profiles.setdefault(active, {})
+
+server["port"] = int(os.environ["PORT"])
+server["compat_mode"] = os.environ["COMPAT_MODE"]
+server["stream_chunk_timeout_secs"] = int(os.environ.get("STREAM_CHUNK_TIMEOUT_SECS", "30"))
+if os.environ.get("INGRESS_API_KEY"):
+    server["ingress_api_key"] = os.environ["INGRESS_API_KEY"]
+else:
+    server.pop("ingress_api_key", None)
+origins = [v for v in os.environ.get("ALLOWED_ORIGINS", "").split(",") if v]
+if origins:
+    server["allow_origins"] = origins
+else:
+    server.pop("allow_origins", None)
+if os.environ.get("BIN_PATH"):
+    server["bin_path"] = os.environ["BIN_PATH"]
+else:
+    server.pop("bin_path", None)
+
+runtime["active_profile"] = active
+profile["backend"] = os.environ["BACKEND_PROFILE"]
+profile["upstream_api"] = os.environ.get("UPSTREAM_API") or "responses"
+profile["base_url"] = os.environ["BACKEND_URL"]
+profile["model"] = os.environ["PRIMARY_MODEL"]
+if os.environ.get("REASONING_MODEL"):
+    profile["reasoning_model"] = os.environ["REASONING_MODEL"]
+else:
+    profile.pop("reasoning_model", None)
+if os.environ.get("DEEPSEEK_ANTHROPIC_BACKEND"):
+    profile["deepseek_anthropic_backend"] = os.environ["DEEPSEEK_ANTHROPIC_BACKEND"].lower() in ("1", "true", "yes", "on")
+else:
+    profile.pop("deepseek_anthropic_backend", None)
+if os.environ.get("STRICT_MODEL"):
+    profile["strict_model"] = os.environ["STRICT_MODEL"].lower() in ("1", "true", "yes", "on")
+else:
+    profile.pop("strict_model", None)
+if os.environ.get("API_KEY_ENV"):
+    profile["api_key_env"] = os.environ["API_KEY_ENV"]
+    profile.pop("api_key", None)
+    profile.pop("secret_ref", None)
+elif os.environ.get("API_KEY"):
+    profile["api_key"] = os.environ["API_KEY"]
+    profile.pop("api_key_env", None)
+    profile.pop("secret_ref", None)
+elif os.environ.get("SECRET_REF"):
+    profile["secret_ref"] = os.environ["SECRET_REF"]
+    profile.pop("api_key", None)
+    profile.pop("api_key_env", None)
+
+def format_value(value, indent=0):
+    pad = " " * indent
+    if isinstance(value, str):
+        return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(format_value(item, indent) for item in value) + "]"
+    if isinstance(value, dict):
+        raise TypeError("dict formatting handled separately")
+    return format(value)
+
+lines = []
+for section_name in ("server", "runtime"):
+    lines.append(f"[{section_name}]")
+    for key, value in data.get(section_name, {}).items():
+        lines.append(f"{key} = {format_value(value)}")
+    lines.append("")
+
+for profile_name, profile_data in data.get("profiles", {}).items():
+    lines.append(f"[profiles.{profile_name}]")
+    for key, value in profile_data.items():
+        lines.append(f"{key} = {format_value(value)}")
+    lines.append("")
+
+config_path.write_text("\n".join(lines).rstrip() + "\n")
+PY
+  write_legacy_env
+}
+
+is_running() {
+  [ -f "$PID_FILE" ] || return 1
+  pid=$(cat "$PID_FILE" 2>/dev/null || true)
+  [ -n "$pid" ] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+resolve_api_key() {
+  if [ -n "${API_KEY:-}" ]; then
+    printf '%s' "$API_KEY"
+    return 0
+  fi
+  if [ -n "${SECRET_REF:-}" ]; then
+    "$SECRET_HELPER" get "$SECRET_REF"
+    return 0
+  fi
+  if [ -n "${API_KEY_ENV:-}" ]; then
+    eval "resolved=\${$API_KEY_ENV-}"
+    if [ -n "${resolved:-}" ]; then
+      printf '%s' "$resolved"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+secret_ref_default() {
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
+  if [ "$(uname -s)" = "Darwin" ]; then
+    printf 'keychain:%s' "$profile_name"
+  else
+    printf 'vault:%s' "$profile_name"
+  fi
+}
+
+read_hidden_value() {
+  prompt=${1:-"Value: "}
+  if [ ! -t 0 ]; then
+    IFS= read -r value
+    printf '%s' "$value"
+    return 0
+  fi
+  printf '%s' "$prompt" >&2
+  stty -echo
+  IFS= read -r value
+  stty echo
+  printf '\n' >&2
+  printf '%s' "$value"
+}
+
+health_on_port() {
+  curl -fsS "http://127.0.0.1:$1/health" 2>/dev/null
+}
+
+bin_supports_profile() {
+  [ -x "$1" ] || return 1
+  "$1" --help 2>&1 | grep -q -- '--backend-profile'
+}
+
+ensure_bin_ready() {
+  if bin_supports_profile "$BIN_PATH"; then
+    return 0
+  fi
+  if bin_supports_profile "$PREBUILT_BIN"; then
+    BIN_PATH="$PREBUILT_BIN"
+    save_config_values
+    return 0
+  fi
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "cargo not found and anthmorph binary is missing or outdated" >&2
+    return 1
+  fi
+  (cd "$ROOT_DIR" && cargo build --release --quiet) || return 1
+  BIN_PATH=$ROOT_DIR/target/release/anthmorph
+  save_config_values
+  bin_supports_profile "$BIN_PATH"
+}
+
+config_bootstrap_cmd() {
+  ensure_config
+  load_config >/dev/null 2>&1 || true
+  echo "config ready at $CONFIG_FILE"
+}
+
+config_show_cmd() {
+  ensure_config
+  cat "$CONFIG_FILE"
+}
+
+profile_list_cmd() {
+  ensure_config
+  CONFIG_FILE="$CONFIG_FILE" "$PYTHON_BIN" - <<'PY'
+import os, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(os.environ["CONFIG_FILE"]).read_text())
+active = data.get("runtime", {}).get("active_profile", "")
+for name, profile in data.get("profiles", {}).items():
+    marker = "*" if name == active else " "
+    backend = profile.get("backend", "")
+    model = profile.get("model", "")
+    print(f"{marker} {name}\t{backend}\t{model}")
+PY
+}
+
+profile_use_cmd() {
+  ensure_config
+  profile_name=${1:-}
+  [ -n "$profile_name" ] || { echo "missing profile name" >&2; exit 1; }
+  CONFIG_FILE="$CONFIG_FILE" PROFILE_NAME="$profile_name" "$PYTHON_BIN" - <<'PY'
+import os, tomllib, sys
+from pathlib import Path
+path = Path(os.environ["CONFIG_FILE"])
+data = tomllib.loads(path.read_text())
+profiles = data.get("profiles", {})
+name = os.environ["PROFILE_NAME"]
+if name not in profiles:
+    print(f"unknown profile: {name}", file=sys.stderr)
+    sys.exit(1)
+PY
+  load_config
+  ACTIVE_PROFILE="$profile_name"
+  save_config_values
+  echo "active profile: $profile_name"
+}
+
+parse_common_init_args() {
+  SAVE_KEY=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port)
+        PORT=$2; shift 2 ;;
+      --compat-mode)
+        COMPAT_MODE=$2; shift 2 ;;
+      --reasoning-model)
+        REASONING_MODEL=$2; shift 2 ;;
+      --ingress-api-key)
+        INGRESS_API_KEY=$2; shift 2 ;;
+      --allow-origin)
+        if [ -z "${ALLOWED_ORIGINS:-}" ]; then
+          ALLOWED_ORIGINS=$2
+        else
+          ALLOWED_ORIGINS=${ALLOWED_ORIGINS},$2
+        fi
+        shift 2 ;;
+      --key-env)
+        API_KEY_ENV=$2; shift 2 ;;
+      --api-key)
+        API_KEY=$2; shift 2 ;;
+      --save-key)
+        SAVE_KEY=1; shift ;;
+      *)
+        echo "unknown option: $1" >&2; exit 1 ;;
+    esac
+  done
+  if [ "$SAVE_KEY" -ne 1 ]; then
+    API_KEY=
+  fi
+}
+
+init_cmd() {
+  preset=${1:-}
+  [ -n "$preset" ] || { echo "missing preset" >&2; exit 1; }
+  shift
+  ensure_config
+  load_config
+  case "$preset" in
+    responses|responses_provider)
+      ACTIVE_PROFILE=responses_provider
+      BACKEND_PROFILE=openai-generic
+      UPSTREAM_API=responses
+      BACKEND_URL=https://api.example.com/v1
+      PRIMARY_MODEL=example/responses-model
+      REASONING_MODEL=example/responses-model
+      DEEPSEEK_ANTHROPIC_BACKEND=
+      STRICT_MODEL=true
+      API_KEY_ENV=ANTHMORPH_PROVIDER_API_KEY
+      API_KEY=
+      ;;
+    chat|chat_provider)
+      ACTIVE_PROFILE=chat_provider
+      BACKEND_PROFILE=openai-generic
+      UPSTREAM_API=chat-completions
+      BACKEND_URL=https://api.example.com/v1
+      PRIMARY_MODEL=example/chat-model
+      REASONING_MODEL=example/chat-model
+      DEEPSEEK_ANTHROPIC_BACKEND=
+      STRICT_MODEL=
+      API_KEY_ENV=ANTHMORPH_PROVIDER_API_KEY
+      API_KEY=
+      ;;
+    *)
+      echo "unsupported preset: $preset" >&2
+      exit 1
+      ;;
+  esac
+  parse_common_init_args "$@"
+  BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
+  save_config_values
+  echo "saved config to $CONFIG_FILE"
+}
+
+bootstrap_messages_client_cmd() {
+  load_config
+  write_mode=0
+  bootstrap_base_url=
+  bootstrap_token=
+  bootstrap_model=
+  bootstrap_timeout_ms=6000000
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --write) write_mode=1; shift ;;
+      --base-url) bootstrap_base_url=$2; shift 2 ;;
+      --token) bootstrap_token=$2; shift 2 ;;
+      --model) bootstrap_model=$2; shift 2 ;;
+      --timeout-ms) bootstrap_timeout_ms=$2; shift 2 ;;
+      *) echo "unknown bootstrap option: $1" >&2; exit 1 ;;
+    esac
+  done
+  [ -n "$bootstrap_base_url" ] || bootstrap_base_url="http://127.0.0.1:${PORT:-3108}"
+  [ -n "$bootstrap_model" ] || bootstrap_model="${PRIMARY_MODEL:-}"
+  [ -n "$bootstrap_token" ] || bootstrap_token="${INGRESS_API_KEY:-anthmorph-local}"
+  settings_json=$(BOOTSTRAP_TOKEN="$bootstrap_token" \
+    BOOTSTRAP_BASE_URL="$bootstrap_base_url" \
+    BOOTSTRAP_TIMEOUT_MS="$bootstrap_timeout_ms" \
+    BOOTSTRAP_MODEL="$bootstrap_model" \
+    "$PYTHON_BIN" - <<'PY'
+import json, os
+model = os.environ["BOOTSTRAP_MODEL"]
+print(json.dumps({"env": {
+    "ANTHROPIC_AUTH_TOKEN": os.environ["BOOTSTRAP_TOKEN"],
+    "ANTHROPIC_BASE_URL": os.environ["BOOTSTRAP_BASE_URL"],
+    "API_TIMEOUT_MS": os.environ["BOOTSTRAP_TIMEOUT_MS"],
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": model,
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": model,
+    "CLAUDE_CODE_SUBAGENT_MODEL": model,
+    "ANTHROPIC_SMALL_FAST_MODEL": model,
+}}, indent=2))
+PY
+)
+  if [ "$write_mode" -eq 1 ]; then
+    mkdir -p "$HOME/.claude"
+    SETTINGS_FILE="$HOME/.claude/settings.json" SETTINGS_JSON="$settings_json" "$PYTHON_BIN" - <<'PY'
+import json, os
+from pathlib import Path
+path = Path(os.environ["SETTINGS_FILE"])
+incoming = json.loads(os.environ["SETTINGS_JSON"])
+existing = {}
+if path.exists():
+    try:
+        existing = json.loads(path.read_text())
+    except Exception:
+        existing = {}
+env = existing.get("env", {}) if isinstance(existing.get("env"), dict) else {}
+env.update(incoming.get("env", {}))
+existing["env"] = env
+path.write_text(json.dumps(existing, indent=2) + "\n")
+PY
+    echo "wrote $HOME/.claude/settings.json"
+  else
+    printf '%s\n' "$settings_json"
+  fi
+}
+
+bootstrap_codex_cmd() {
+  load_config
+  write_mode=0
+  base_url=
+  provider_name=anthmorph
+  bootstrap_model=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --write) write_mode=1; shift ;;
+      --base-url) base_url=$2; shift 2 ;;
+      --provider-name) provider_name=$2; shift 2 ;;
+      --model) bootstrap_model=$2; shift 2 ;;
+      *) echo "unknown bootstrap option: $1" >&2; exit 1 ;;
+    esac
+  done
+  [ -n "$base_url" ] || base_url="http://127.0.0.1:${PORT:-3108}/v1"
+  [ -n "$bootstrap_model" ] || bootstrap_model="${PRIMARY_MODEL:-example/responses-model}"
+  snippet=$(PROVIDER_NAME="$provider_name" BASE_URL="$base_url" MODEL="$bootstrap_model" "$PYTHON_BIN" - <<'PY'
+import os
+name = os.environ["PROVIDER_NAME"]
+base_url = os.environ["BASE_URL"]
+model = os.environ["MODEL"]
+print(f"""[model_providers.{name}]
+name = "{name}"
+base_url = "{base_url}"
+wire_api = "responses"
+
+model = "{model}"
+model_provider = "{name}"
+""")
+PY
+)
+  if [ "$write_mode" -eq 1 ]; then
+    mkdir -p "$STATE_DIR/bootstrap"
+    out="$STATE_DIR/bootstrap/codex-provider.toml"
+    printf '%s\n' "$snippet" > "$out"
+    echo "wrote $out"
+  else
+    printf '%s\n' "$snippet"
+  fi
+}
+
+key_set_cmd() {
+  ensure_config
+  load_config
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
+  CONFIG_FILE="$CONFIG_FILE" PROFILE_NAME="$profile_name" "$PYTHON_BIN" - <<'PY'
+import os, sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(os.environ["CONFIG_FILE"]).read_text())
+if os.environ["PROFILE_NAME"] not in data.get("profiles", {}):
+    print(f"unknown profile: {os.environ['PROFILE_NAME']}", file=sys.stderr)
+    sys.exit(1)
+PY
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+    load_config
+  fi
+  ACTIVE_PROFILE=$profile_name
+  SECRET_REF=${SECRET_REF:-$(secret_ref_default "$profile_name")}
+  secret_value=$(read_hidden_value "API key for ${profile_name}: ")
+  [ -n "$secret_value" ] || { echo "empty key" >&2; exit 1; }
+  "$SECRET_HELPER" set "$SECRET_REF" "$secret_value"
+  API_KEY=
+  API_KEY_ENV=
+  save_config_values
+  echo "stored secret for $profile_name via $SECRET_REF"
+}
+
+key_test_cmd() {
+  load_config
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+    load_config
+  fi
+  api_key=$(resolve_api_key || true)
+  [ -n "$api_key" ] || { echo "missing key for $profile_name" >&2; exit 1; }
+  status=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $api_key" \
+    "${BACKEND_URL%/}/models")
+  if [ "$status" = "200" ]; then
+    echo "key ok for $profile_name"
+  else
+    echo "key test failed for $profile_name: HTTP $status" >&2
+    exit 1
+  fi
+}
+
+key_delete_cmd() {
+  load_config
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+    load_config
+  fi
+  ref=${SECRET_REF:-$(secret_ref_default "$profile_name")}
+  "$SECRET_HELPER" delete "$ref"
+  API_KEY=
+  API_KEY_ENV=
+  SECRET_REF=
+  save_config_values
+  echo "deleted secret for $profile_name"
+}
+
+key_list_cmd() {
+  ensure_config
+  CONFIG_FILE="$CONFIG_FILE" "$PYTHON_BIN" - <<'PY'
+import os, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(os.environ["CONFIG_FILE"]).read_text())
+active = data.get("runtime", {}).get("active_profile", "")
+for name, profile in data.get("profiles", {}).items():
+    marker = "*" if name == active else " "
+    source = "missing"
+    if profile.get("secret_ref"):
+        source = profile["secret_ref"]
+    elif profile.get("api_key_env"):
+        source = f"env:{profile['api_key_env']}"
+    elif profile.get("api_key"):
+        source = "plaintext"
+    print(f"{marker} {name}\t{source}")
+PY
+}
+
+wizard_cmd() {
+  profile_name=${1:-responses_provider}
+  init_cmd "$profile_name"
+  key_set_cmd "$profile_name"
+  key_test_cmd "$profile_name"
+  service_install_cmd >/dev/null 2>&1 || true
+  service_restart_cmd >/dev/null 2>&1 || true
+  echo "wizard completed for $profile_name"
+}
+
+doctor_cmd() {
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+  fi
+  load_config
+  echo "config: ok ($CONFIG_FILE)"
+  api_key=$(resolve_api_key || true)
+  if [ -z "$api_key" ]; then
+    echo "secret: missing" >&2
+    exit 1
+  fi
+  echo "secret: ok"
+  status=$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $api_key" \
+    "${BACKEND_URL%/}/models")
+  echo "provider_models_http: $status"
+  health=$(health_on_port "$PORT" || true)
+  echo "local_health: ${health:-unreachable}"
+  curl -fsS "http://127.0.0.1:${PORT}/v1/models" >/dev/null && echo "local_models: ok" || echo "local_models: failed"
+}
+
+model_probe_cmd() {
+  load_config
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
+  if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
+    profile_use_cmd "$profile_name" >/dev/null
+    load_config
+  fi
+  api_key=$(resolve_api_key || true)
+  [ -n "$api_key" ] || { echo "missing key for $profile_name" >&2; exit 1; }
+  payload=$(printf '{"model":"%s","max_tokens":16,"messages":[{"role":"user","content":"Reply exactly OK."}]}' "$PRIMARY_MODEL")
+  response=$(curl -sS "${BACKEND_URL%/}/anthropic/v1/messages" \
+    -H "x-api-key: $api_key" \
+    -H "anthropic-version: 2023-06-01" \
+    -H "Content-Type: application/json" \
+    -d "$payload")
+  returned=$(printf '%s' "$response" | "$PYTHON_BIN" -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("model", ""))
+except Exception:
+    print("")')
+  echo "requested_model: $PRIMARY_MODEL"
+  echo "returned_model: ${returned:-unknown}"
+  strict_lc=$(printf '%s' "${STRICT_MODEL:-false}" | tr '[:upper:]' '[:lower:]')
+  if [ "$strict_lc" = "true" ] && [ "$returned" != "$PRIMARY_MODEL" ]; then
+    echo "strict_model: failed" >&2
+    exit 1
+  fi
+  echo "strict_model: ok"
+}
+
+set_cmd() {
+  load_config
+  field=${1:-}
+  [ -n "$field" ] || { echo "missing field" >&2; exit 1; }
+  shift
+  case "$field" in
+    key-env)
+      API_KEY_ENV=${1:-}
+      [ -n "$API_KEY_ENV" ] || { echo "missing env name" >&2; exit 1; }
+      API_KEY=
+      ;;
+    key)
+      value=${1:-}
+      [ -n "$value" ] || { echo "missing key value" >&2; exit 1; }
+      shift
+      save_flag=${1:-}
+      [ "$save_flag" = "--save" ] || { echo "use: anthmorphctl set key VALUE --save" >&2; exit 1; }
+      API_KEY=$value
+      API_KEY_ENV=
+      ;;
+    *)
+      echo "unsupported field: $field" >&2; exit 1 ;;
+  esac
+  save_config_values
+  echo "updated $field"
+}
+
+unset_cmd() {
+  load_config
+  field=${1:-}
+  case "$field" in
+    key)
+      API_KEY=
+      API_KEY_ENV=
+      ;;
+    *)
+      echo "unsupported unset field: $field" >&2; exit 1 ;;
+  esac
+  save_config_values
+  echo "cleared $field"
+}
+
+start_cmd() {
+  load_config
+  if is_running; then
+    echo "already running (pid $(cat "$PID_FILE"))"
+    return 0
+  fi
+  if health_on_port "$PORT" >/dev/null; then
+    echo "port $PORT is already serving an AnthMorph-compatible health endpoint" >&2
+    exit 1
+  fi
+  ensure_bin_ready || exit 1
+  api_key=$(resolve_api_key || true)
+  if [ -z "$api_key" ]; then
+    echo "missing API key: configure key-env, secret_ref, or save an API key" >&2
+    exit 1
+  fi
+  export PORT ANTHMORPH_BACKEND_PROFILE=$BACKEND_PROFILE ANTHMORPH_COMPAT_MODE=$COMPAT_MODE
+  export ANTHMORPH_BACKEND_URL=$BACKEND_URL ANTHMORPH_PRIMARY_MODEL=$PRIMARY_MODEL ANTHMORPH_API_KEY=$api_key
+  export ANTHMORPH_STREAM_CHUNK_TIMEOUT_SECS=${STREAM_CHUNK_TIMEOUT_SECS:-30}
+  export ANTHMORPH_DEEPSEEK_ANTHROPIC_BACKEND=${DEEPSEEK_ANTHROPIC_BACKEND:-false}
+  export ANTHMORPH_STRICT_MODEL=${STRICT_MODEL:-false}
+  if [ -n "${REASONING_MODEL:-}" ]; then export ANTHMORPH_REASONING_MODEL=$REASONING_MODEL; else unset ANTHMORPH_REASONING_MODEL 2>/dev/null || true; fi
+  if [ -n "${INGRESS_API_KEY:-}" ]; then export ANTHMORPH_INGRESS_API_KEY=$INGRESS_API_KEY; else unset ANTHMORPH_INGRESS_API_KEY 2>/dev/null || true; fi
+  if [ -n "${ALLOWED_ORIGINS:-}" ]; then export ANTHMORPH_ALLOWED_ORIGINS=$ALLOWED_ORIGINS; else unset ANTHMORPH_ALLOWED_ORIGINS 2>/dev/null || true; fi
+  nohup "$BIN_PATH" >>"$LOG_FILE" 2>&1 &
+  pid=$!
+  echo "$pid" > "$PID_FILE"
+  sleep 1
+  if kill -0 "$pid" 2>/dev/null; then
+    echo "started anthmorph (pid $pid)"
+  else
+    echo "failed to start; see $LOG_FILE" >&2
+    rm -f "$PID_FILE"
+    exit 1
+  fi
+}
+
+stop_cmd() {
+  if ! is_running; then
+    rm -f "$PID_FILE"
+    echo "not running"
+    return 0
+  fi
+  pid=$(cat "$PID_FILE")
+  kill "$pid" 2>/dev/null || true
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$PID_FILE"
+      echo "stopped anthmorph"
+      return 0
+    fi
+    sleep 1
+  done
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$PID_FILE"
+  echo "killed anthmorph"
+}
+
+status_cmd() {
+  load_config
+  if is_running; then
+    pid=$(cat "$PID_FILE")
+    health=$(health_on_port "$PORT" || true)
+    echo "status: running"
+    echo "pid: $pid"
+    echo "health: ${health:-unreachable}"
+  else
+    health=$(health_on_port "$PORT" || true)
+    if [ -n "$health" ]; then
+      echo "status: external-process-on-port"
+      echo "health: $health"
+    else
+      echo "status: stopped"
+    fi
+  fi
+  echo "config_file: $CONFIG_FILE"
+  echo "profile: ${ACTIVE_PROFILE:-}"
+  echo "backend_profile: ${BACKEND_PROFILE:-}"
+  echo "backend_url: ${BACKEND_URL:-}"
+  echo "primary_model: ${PRIMARY_MODEL:-}"
+  echo "provider_messages_backend: ${DEEPSEEK_ANTHROPIC_BACKEND:-false}"
+  echo "strict_model: ${STRICT_MODEL:-false}"
+  echo "port: ${PORT:-}"
+  if [ -n "${API_KEY_ENV:-}" ]; then
+    echo "key_source: env:$API_KEY_ENV"
+  elif [ -n "${SECRET_REF:-}" ]; then
+    echo "key_source: $SECRET_REF"
+  elif [ -n "${API_KEY:-}" ]; then
+    echo "key_source: saved"
+  else
+    echo "key_source: missing"
+  fi
+  echo "log_file: $LOG_FILE"
+}
+
+logs_cmd() {
+  if [ -f "$LOG_FILE" ]; then
+    tail -n 80 "$LOG_FILE"
+  else
+    echo "log file not found: $LOG_FILE" >&2
+    exit 1
+  fi
+}
+
+print_config_cmd() {
+  ensure_config
+  sed -e 's/api_key = .*/api_key = "<hidden>"/' -e 's/ingress_api_key = .*/ingress_api_key = "<hidden>"/' "$CONFIG_FILE"
+}
+
+service_install_cmd() {
+  ensure_config
+  if [ "$(uname -s)" = "Darwin" ]; then
+    mkdir -p "$(dirname "$LAUNCHD_PLIST")"
+    cat >"$LAUNCHD_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LAUNCHD_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$ROOT_DIR/scripts/anthmorph-service-run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>$LOG_FILE</string>
+  <key>StandardErrorPath</key><string>$LOG_FILE</string>
+</dict>
+</plist>
+EOF
+    launchctl unload "$LAUNCHD_PLIST" >/dev/null 2>&1 || true
+    launchctl load "$LAUNCHD_PLIST"
+    echo "installed launchd service: $LAUNCHD_PLIST"
+  else
+    mkdir -p "$(dirname "$SYSTEMD_UNIT")"
+    cat >"$SYSTEMD_UNIT" <<EOF
+[Unit]
+Description=AnthMorph universal proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$ROOT_DIR/scripts/anthmorph-service-run
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+EOF
+    systemctl --user daemon-reload
+    systemctl --user enable --now anthmorph.service
+    echo "installed systemd user service: $SYSTEMD_UNIT"
+  fi
+}
+
+service_uninstall_cmd() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    launchctl unload "$LAUNCHD_PLIST" >/dev/null 2>&1 || true
+    rm -f "$LAUNCHD_PLIST"
+    echo "removed launchd service"
+  else
+    systemctl --user disable --now anthmorph.service >/dev/null 2>&1 || true
+    rm -f "$SYSTEMD_UNIT"
+    systemctl --user daemon-reload
+    echo "removed systemd user service"
+  fi
+}
+
+service_status_cmd() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    launchctl list | grep "$LAUNCHD_LABEL" || true
+  else
+    systemctl --user status anthmorph.service --no-pager || true
+  fi
+}
+
+service_enable_cmd() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    launchctl load "$LAUNCHD_PLIST"
+  else
+    systemctl --user enable --now anthmorph.service
+  fi
+}
+
+service_disable_cmd() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    launchctl unload "$LAUNCHD_PLIST"
+  else
+    systemctl --user disable --now anthmorph.service
+  fi
+}
+
+service_restart_cmd() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    launchctl unload "$LAUNCHD_PLIST" >/dev/null 2>&1 || true
+    launchctl load "$LAUNCHD_PLIST"
+  else
+    systemctl --user restart anthmorph.service
+  fi
+}
+
+cmd=${1:-help}
+case "$cmd" in
+  config)
+    sub=${2:-}
+    case "$sub" in
+      bootstrap) config_bootstrap_cmd ;;
+      show) config_show_cmd ;;
+      *) echo "unknown config subcommand: $sub" >&2; exit 1 ;;
+    esac
+    ;;
+  init)
+    shift
+    init_cmd "$@"
+    ;;
+  wizard)
+    shift
+    wizard_cmd "$@"
+    ;;
+  doctor)
+    shift
+    doctor_cmd "$@"
+    ;;
+  profile)
+    sub=${2:-}
+    case "$sub" in
+      list) profile_list_cmd ;;
+      use) shift 2; profile_use_cmd "$@" ;;
+      *) echo "unknown profile subcommand: $sub" >&2; exit 1 ;;
+    esac
+    ;;
+  model)
+    sub=${2:-}
+    case "$sub" in
+      probe) shift 2; model_probe_cmd "$@" ;;
+      *) echo "unknown model subcommand: $sub" >&2; exit 1 ;;
+    esac
+    ;;
+  key)
+    sub=${2:-}
+    case "$sub" in
+      set) shift 2; key_set_cmd "$@" ;;
+      test) shift 2; key_test_cmd "$@" ;;
+      delete) shift 2; key_delete_cmd "$@" ;;
+      list) key_list_cmd ;;
+      *) echo "unknown key subcommand: $sub" >&2; exit 1 ;;
+    esac
+    ;;
+  set)
+    shift
+    set_cmd "$@"
+    ;;
+  unset)
+    shift
+    unset_cmd "$@"
+    ;;
+  start) start_cmd ;;
+  stop) stop_cmd ;;
+  restart) stop_cmd; start_cmd ;;
+  status) status_cmd ;;
+  logs) logs_cmd ;;
+  print-config) print_config_cmd ;;
+  bootstrap)
+    sub=${2:-}
+    case "$sub" in
+      messages-client) shift 2; bootstrap_messages_client_cmd "$@" ;;
+      codex) shift 2; bootstrap_codex_cmd "$@" ;;
+      *) echo "unknown bootstrap target: $sub" >&2; exit 1 ;;
+    esac
+    ;;
+  service)
+    sub=${2:-}
+    case "$sub" in
+      install) service_install_cmd ;;
+      uninstall) service_uninstall_cmd ;;
+      enable) service_enable_cmd ;;
+      disable) service_disable_cmd ;;
+      restart) service_restart_cmd ;;
+      status) service_status_cmd ;;
+      *) echo "unknown service subcommand: $sub" >&2; exit 1 ;;
+    esac
+    ;;
+  help|-h|--help) usage ;;
+  *) echo "unknown command: $cmd" >&2; usage >&2; exit 1 ;;
+esac

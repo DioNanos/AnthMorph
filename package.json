@@ -1,0 +1,74 @@
+{
+  "name": "@mmmbuto/anthmorph",
+  "version": "0.2.0",
+  "description": "High-performance Rust API bridge for Codex, Anthropic, OpenAI chat, and Responses",
+  "license": "MIT",
+  "author": "DioNanos",
+  "bin": {
+    "anthmorph": "bin/anthmorph",
+    "anthmorphctl": "scripts/anthmorphctl"
+  },
+  "files": [
+    "bin/",
+    "prebuilt/",
+    "scripts/anthmorph-secret",
+    "scripts/anthmorphctl",
+    "scripts/anthmorph-service-run",
+    "scripts/write_default_config.py",
+    "scripts/docker_build_linux.sh",
+    "scripts/docker_npm_dry_run.sh",
+    "scripts/docker_release_checks.sh",
+    "scripts/docker_rust_test.sh",
+    "scripts/docker_secret_scan.sh",
+    "scripts/postinstall.js",
+    "src/",
+    "docs/CLIENT_COMPATIBILITY.md",
+    "docs/GITHUB_ABOUT.md",
+    "docs/PACKAGING.md",
+    "docs/RELEASE.md",
+    "Cargo.toml",
+    "Cargo.lock",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "build:rust": "cargo build --release",
+    "test": "cargo test",
+    "scan:secrets:docker": "sh scripts/docker_secret_scan.sh",
+    "build:docker:linux": "sh scripts/docker_build_linux.sh",
+    "test:docker": "sh scripts/docker_rust_test.sh",
+    "verify:docker": "sh scripts/docker_release_checks.sh",
+    "pack:dry-run": "npm pack --dry-run",
+    "pack:dry-run:docker": "sh scripts/docker_npm_dry_run.sh",
+    "publish:dry-run:docker": "sh scripts/docker_npm_dry_run.sh publish"
+  },
+  "keywords": [
+    "anthropic",
+    "claude",
+    "codex",
+    "codex-vl",
+    "proxy",
+    "responses-api",
+    "openai",
+    "chat-completions",
+    "openai-compatible",
+    "termux",
+    "rust"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DioNanos/AnthMorph.git"
+  },
+  "homepage": "https://github.com/DioNanos/AnthMorph#readme",
+  "bugs": {
+    "url": "https://github.com/DioNanos/AnthMorph/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

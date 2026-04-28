@@ -1,0 +1,101 @@
+#!/bin/sh
+set -eu
+
+SCRIPT_PATH=$(readlink -f -- "$0" 2>/dev/null || printf "%s" "$0")
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
+HOME_CONFIG_DIR=${HOME}/.config/anthmorph
+LOCAL_STATE_DIR=$ROOT_DIR/.anthmorph
+CONFIG_FILE_DEFAULT=$HOME_CONFIG_DIR/config.toml
+if [ -f "$LOCAL_STATE_DIR/config.toml" ] && [ ! -f "$CONFIG_FILE_DEFAULT" ]; then
+  CONFIG_FILE=$LOCAL_STATE_DIR/config.toml
+else
+  CONFIG_FILE=${ANTHMORPH_CONFIG_FILE:-$CONFIG_FILE_DEFAULT}
+fi
+PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
+if [ -x "$PREBUILT_BIN" ]; then
+  BIN_PATH_DEFAULT=$PREBUILT_BIN
+else
+  BIN_PATH_DEFAULT=$ROOT_DIR/target/release/anthmorph
+fi
+SECRET_HELPER=$ROOT_DIR/scripts/anthmorph-secret
+if [ -x /opt/homebrew/bin/python3 ]; then
+  PYTHON_BIN=/opt/homebrew/bin/python3
+else
+  PYTHON_BIN=python3
+fi
+
+if [ ! -f "$CONFIG_FILE" ]; then
+  "$PYTHON_BIN" "$ROOT_DIR/scripts/write_default_config.py" "$CONFIG_FILE"
+fi
+
+eval "$(
+  CONFIG_FILE="$CONFIG_FILE" BIN_PATH_DEFAULT="$BIN_PATH_DEFAULT" "$PYTHON_BIN" - <<'PY'
+import os, shlex, tomllib
+from pathlib import Path
+path = Path(os.environ["CONFIG_FILE"])
+data = tomllib.loads(path.read_text())
+server = data.get("server", {})
+runtime = data.get("runtime", {})
+active = runtime.get("active_profile", "responses_provider")
+profile = data.get("profiles", {}).get(active, {})
+def emit(k, v):
+    if v is None:
+        v = ""
+    print(f"{k}={shlex.quote(str(v))}")
+emit("PORT", server.get("port", 3108))
+emit("COMPAT_MODE", server.get("compat_mode", "compat"))
+emit("BACKEND_PROFILE", profile.get("backend", "openai-generic"))
+emit("UPSTREAM_API", profile.get("upstream_api", "responses"))
+emit("BACKEND_URL", profile.get("base_url", "https://api.example.com/v1"))
+emit("PRIMARY_MODEL", profile.get("model", "example/responses-model"))
+emit("REASONING_MODEL", profile.get("reasoning_model", profile.get("model", "")))
+emit("DEEPSEEK_ANTHROPIC_BACKEND", profile.get("deepseek_anthropic_backend", False))
+emit("STRICT_MODEL", profile.get("strict_model", False))
+emit("API_KEY_ENV", profile.get("api_key_env", ""))
+emit("API_KEY", profile.get("api_key", ""))
+emit("SECRET_REF", profile.get("secret_ref", ""))
+emit("INGRESS_API_KEY", server.get("ingress_api_key", ""))
+origins = server.get("allow_origins", [])
+if isinstance(origins, list):
+    origins = ",".join(origins)
+emit("ALLOWED_ORIGINS", origins)
+emit("STREAM_CHUNK_TIMEOUT_SECS", server.get("stream_chunk_timeout_secs", 30))
+emit("BIN_PATH", server.get("bin_path", os.environ["BIN_PATH_DEFAULT"]))
+PY
+)"
+
+if [ "${BIN_PATH:-}" = "$ROOT_DIR/target/release/anthmorph" ]; then
+  BIN_PATH=$BIN_PATH_DEFAULT
+fi
+
+if [ -n "${API_KEY:-}" ]; then
+  resolved_api_key=$API_KEY
+elif [ -n "${SECRET_REF:-}" ]; then
+  resolved_api_key=$("$SECRET_HELPER" get "$SECRET_REF")
+elif [ -n "${API_KEY_ENV:-}" ]; then
+  eval "resolved_api_key=\${$API_KEY_ENV-}"
+else
+  resolved_api_key=
+fi
+
+if [ -z "${resolved_api_key:-}" ]; then
+  echo "missing API key: configure api_key_env or api_key in $CONFIG_FILE" >&2
+  exit 1
+fi
+
+export PORT
+export ANTHMORPH_BACKEND_PROFILE=$BACKEND_PROFILE
+export ANTHMORPH_UPSTREAM_API=$UPSTREAM_API
+export ANTHMORPH_COMPAT_MODE=${COMPAT_MODE:-compat}
+export ANTHMORPH_BACKEND_URL=$BACKEND_URL
+export ANTHMORPH_PRIMARY_MODEL=$PRIMARY_MODEL
+export ANTHMORPH_API_KEY=$resolved_api_key
+export ANTHMORPH_STREAM_CHUNK_TIMEOUT_SECS=$STREAM_CHUNK_TIMEOUT_SECS
+export ANTHMORPH_DEEPSEEK_ANTHROPIC_BACKEND=$DEEPSEEK_ANTHROPIC_BACKEND
+export ANTHMORPH_STRICT_MODEL=$STRICT_MODEL
+
+if [ -n "${REASONING_MODEL:-}" ]; then export ANTHMORPH_REASONING_MODEL=$REASONING_MODEL; fi
+if [ -n "${INGRESS_API_KEY:-}" ]; then export ANTHMORPH_INGRESS_API_KEY=$INGRESS_API_KEY; fi
+if [ -n "${ALLOWED_ORIGINS:-}" ]; then export ANTHMORPH_ALLOWED_ORIGINS=$ALLOWED_ORIGINS; fi
+
+exec "$BIN_PATH"
