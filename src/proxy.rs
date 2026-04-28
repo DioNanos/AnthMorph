@@ -2299,11 +2299,11 @@ impl Config {
 
         Self {
             backend_url: std::env::var("ANTHMORPH_BACKEND_URL")
-                .unwrap_or_else(|_| "https://llm.chutes.ai/v1".to_string()),
+                .unwrap_or_else(|_| "https://api.example.com/v1".to_string()),
             backend_profile: std::env::var("ANTHMORPH_BACKEND_PROFILE")
                 .ok()
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(BackendProfile::Chutes),
+                .unwrap_or(BackendProfile::OpenaiGeneric),
             upstream_api: std::env::var("ANTHMORPH_UPSTREAM_API")
                 .ok()
                 .and_then(|v| v.parse().ok())

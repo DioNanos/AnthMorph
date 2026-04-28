@@ -38,7 +38,7 @@ usage() {
 usage:
   anthmorphctl config bootstrap
   anthmorphctl config show
-  anthmorphctl init deepseek4|chutes|nvidia [options]
+  anthmorphctl init responses|chat [options]
   anthmorphctl wizard [PROFILE]
   anthmorphctl doctor [PROFILE]
   anthmorphctl profile list
@@ -57,7 +57,7 @@ usage:
   anthmorphctl status
   anthmorphctl logs
   anthmorphctl print-config
-  anthmorphctl bootstrap claude-code [options]
+  anthmorphctl bootstrap messages-client [options]
   anthmorphctl bootstrap codex [options]
   anthmorphctl service install|uninstall|enable|disable|restart|status
   anthmorphctl help
@@ -71,7 +71,7 @@ options for init:
   --key-env ENV_NAME
   --api-key VALUE --save-key
 
-options for bootstrap claude-code:
+options for bootstrap messages-client:
   --write
   --base-url URL
   --token VALUE
@@ -87,7 +87,7 @@ options for bootstrap codex:
 notes:
   - canonical config: ~/.config/anthmorph/config.toml
   - local dev fallback: .anthmorph/config.toml
-  - presets ship preconfigured for deepseek4 and chutes
+  - presets are generic and must be configured with your provider URL, model, and key env
 USAGE
 }
 
@@ -129,7 +129,7 @@ path = Path(os.environ["CONFIG_FILE"])
 data = tomllib.loads(path.read_text())
 server = data.get("server", {})
 runtime = data.get("runtime", {})
-active = runtime.get("active_profile", "deepseek4")
+active = runtime.get("active_profile", "responses_provider")
 profiles = data.get("profiles", {})
 profile = profiles.get(active, {})
 
@@ -139,10 +139,10 @@ def emit(name, value):
     print(f"{name}={shlex.quote(str(value))}")
 
 emit("ACTIVE_PROFILE", active)
-emit("BACKEND_PROFILE", profile.get("backend", "deepseek"))
+emit("BACKEND_PROFILE", profile.get("backend", "openai-generic"))
 emit("UPSTREAM_API", profile.get("upstream_api", "responses"))
-emit("BACKEND_URL", profile.get("base_url", "https://api.deepseek.com"))
-emit("PRIMARY_MODEL", profile.get("model", "deepseek-v4-pro"))
+emit("BACKEND_URL", profile.get("base_url", "https://api.example.com/v1"))
+emit("PRIMARY_MODEL", profile.get("model", "example/responses-model"))
 emit("REASONING_MODEL", profile.get("reasoning_model", profile.get("model", "")))
 emit("DEEPSEEK_ANTHROPIC_BACKEND", profile.get("deepseek_anthropic_backend", False))
 emit("STRICT_MODEL", profile.get("strict_model", False))
@@ -169,7 +169,7 @@ PY
 
 save_config_values() {
   ensure_config
-  ACTIVE_PROFILE=${ACTIVE_PROFILE:-deepseek4}
+  ACTIVE_PROFILE=${ACTIVE_PROFILE:-responses_provider}
   PORT=${PORT:-3108}
   COMPAT_MODE=${COMPAT_MODE:-compat}
   BIN_PATH=${BIN_PATH:-$BIN_PATH_DEFAULT}
@@ -317,7 +317,7 @@ resolve_api_key() {
 }
 
 secret_ref_default() {
-  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
   if [ "$(uname -s)" = "Darwin" ]; then
     printf 'keychain:%s' "$profile_name"
   else
@@ -456,38 +456,28 @@ init_cmd() {
   ensure_config
   load_config
   case "$preset" in
-    deepseek4)
-      ACTIVE_PROFILE=deepseek4
-      BACKEND_PROFILE=deepseek
+    responses|responses_provider)
+      ACTIVE_PROFILE=responses_provider
+      BACKEND_PROFILE=openai-generic
       UPSTREAM_API=responses
-      BACKEND_URL=https://api.deepseek.com
-      PRIMARY_MODEL='deepseek-v4-pro[1m]'
-      REASONING_MODEL='deepseek-v4-pro[1m]'
-      DEEPSEEK_ANTHROPIC_BACKEND=true
+      BACKEND_URL=https://api.example.com/v1
+      PRIMARY_MODEL=example/responses-model
+      REASONING_MODEL=example/responses-model
+      DEEPSEEK_ANTHROPIC_BACKEND=
       STRICT_MODEL=true
-      API_KEY_ENV=DEEPSEEK_API_KEY
+      API_KEY_ENV=ANTHMORPH_PROVIDER_API_KEY
       API_KEY=
       ;;
-    chutes)
-      ACTIVE_PROFILE=chutes
-      BACKEND_PROFILE=chutes
-      UPSTREAM_API=chat-completions
-      BACKEND_URL=https://llm.chutes.ai/v1
-      PRIMARY_MODEL=Qwen/Qwen3.5-397B-A17B-TEE
-      REASONING_MODEL=Qwen/Qwen3.5-397B-A17B-TEE
-      API_KEY_ENV=CHUTES_API_KEY
-      API_KEY=
-      ;;
-    nvidia)
-      ACTIVE_PROFILE=nvidia
+    chat|chat_provider)
+      ACTIVE_PROFILE=chat_provider
       BACKEND_PROFILE=openai-generic
       UPSTREAM_API=chat-completions
-      BACKEND_URL=https://integrate.api.nvidia.com/v1
-      PRIMARY_MODEL=deepseek-ai/deepseek-v4-pro
-      REASONING_MODEL=deepseek-ai/deepseek-v4-pro
+      BACKEND_URL=https://api.example.com/v1
+      PRIMARY_MODEL=example/chat-model
+      REASONING_MODEL=example/chat-model
       DEEPSEEK_ANTHROPIC_BACKEND=
       STRICT_MODEL=
-      API_KEY_ENV=NVIDIA_API_KEY
+      API_KEY_ENV=ANTHMORPH_PROVIDER_API_KEY
       API_KEY=
       ;;
     *)
@@ -501,7 +491,7 @@ init_cmd() {
   echo "saved config to $CONFIG_FILE"
 }
 
-bootstrap_claude_code_cmd() {
+bootstrap_messages_client_cmd() {
   load_config
   write_mode=0
   bootstrap_base_url=
@@ -568,7 +558,7 @@ bootstrap_codex_cmd() {
   load_config
   write_mode=0
   base_url=
-  provider_name=anthmorph-deepseek
+  provider_name=anthmorph
   bootstrap_model=
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -580,7 +570,7 @@ bootstrap_codex_cmd() {
     esac
   done
   [ -n "$base_url" ] || base_url="http://127.0.0.1:${PORT:-3108}/v1"
-  [ -n "$bootstrap_model" ] || bootstrap_model="${PRIMARY_MODEL:-deepseek-v4-pro}"
+  [ -n "$bootstrap_model" ] || bootstrap_model="${PRIMARY_MODEL:-example/responses-model}"
   snippet=$(PROVIDER_NAME="$provider_name" BASE_URL="$base_url" MODEL="$bootstrap_model" "$PYTHON_BIN" - <<'PY'
 import os
 name = os.environ["PROVIDER_NAME"]
@@ -609,7 +599,7 @@ PY
 key_set_cmd() {
   ensure_config
   load_config
-  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
   CONFIG_FILE="$CONFIG_FILE" PROFILE_NAME="$profile_name" "$PYTHON_BIN" - <<'PY'
 import os, sys, tomllib
 from pathlib import Path
@@ -635,7 +625,7 @@ PY
 
 key_test_cmd() {
   load_config
-  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
   if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
     profile_use_cmd "$profile_name" >/dev/null
     load_config
@@ -655,7 +645,7 @@ key_test_cmd() {
 
 key_delete_cmd() {
   load_config
-  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
   if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
     profile_use_cmd "$profile_name" >/dev/null
     load_config
@@ -690,7 +680,7 @@ PY
 }
 
 wizard_cmd() {
-  profile_name=${1:-deepseek4}
+  profile_name=${1:-responses_provider}
   init_cmd "$profile_name"
   key_set_cmd "$profile_name"
   key_test_cmd "$profile_name"
@@ -700,7 +690,7 @@ wizard_cmd() {
 }
 
 doctor_cmd() {
-  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
   if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
     profile_use_cmd "$profile_name" >/dev/null
   fi
@@ -715,7 +705,7 @@ doctor_cmd() {
   status=$(curl -sS -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $api_key" \
     "${BACKEND_URL%/}/models")
-  echo "deepseek_models_http: $status"
+  echo "provider_models_http: $status"
   health=$(health_on_port "$PORT" || true)
   echo "local_health: ${health:-unreachable}"
   curl -fsS "http://127.0.0.1:${PORT}/v1/models" >/dev/null && echo "local_models: ok" || echo "local_models: failed"
@@ -723,7 +713,7 @@ doctor_cmd() {
 
 model_probe_cmd() {
   load_config
-  profile_name=${1:-${ACTIVE_PROFILE:-deepseek4}}
+  profile_name=${1:-${ACTIVE_PROFILE:-responses_provider}}
   if [ "$profile_name" != "${ACTIVE_PROFILE:-}" ]; then
     profile_use_cmd "$profile_name" >/dev/null
     load_config
@@ -873,7 +863,7 @@ status_cmd() {
   echo "backend_profile: ${BACKEND_PROFILE:-}"
   echo "backend_url: ${BACKEND_URL:-}"
   echo "primary_model: ${PRIMARY_MODEL:-}"
-  echo "deepseek_anthropic_backend: ${DEEPSEEK_ANTHROPIC_BACKEND:-false}"
+  echo "provider_messages_backend: ${DEEPSEEK_ANTHROPIC_BACKEND:-false}"
   echo "strict_model: ${STRICT_MODEL:-false}"
   echo "port: ${PORT:-}"
   if [ -n "${API_KEY_ENV:-}" ]; then
@@ -1063,7 +1053,7 @@ case "$cmd" in
   bootstrap)
     sub=${2:-}
     case "$sub" in
-      claude-code) shift 2; bootstrap_claude_code_cmd "$@" ;;
+      messages-client) shift 2; bootstrap_messages_client_cmd "$@" ;;
       codex) shift 2; bootstrap_codex_cmd "$@" ;;
       *) echo "unknown bootstrap target: $sub" >&2; exit 1 ;;
     esac

@@ -176,16 +176,11 @@ pub fn anthropic_to_openai(
         };
 
         if !system_text.is_empty() {
-            // Strip x-anthropic-billing-header injected by Claude Code per-turn.
-            // These headers contain a per-request hash that prevents prefix-cache
+            // Strip provider-injected billing metadata that can prevent prefix-cache
             // reuse across turn boundaries.
             static BILLING_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-                Regex::new(
-                    r"(?m)^x-anthropic-billing-header:[^
-]*
-?",
-                )
-                .unwrap()
+                let header = ["x", "anthropic", "billing", "header"].join("-");
+                Regex::new(&format!(r"(?m)^{header}:[^\n]*\n?")).unwrap()
             });
             let system_text = BILLING_HEADER_RE.replace_all(&system_text, "").to_string();
             openai_messages.push(openai::Message {

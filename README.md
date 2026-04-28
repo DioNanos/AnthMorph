@@ -158,4 +158,4 @@ Docker release checks:
 
 MIT License
 
-Copyright (c) 2026 Davide A. Guglielmi
+Copyright (c) 2026 DioNanos

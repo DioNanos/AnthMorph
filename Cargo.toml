@@ -6,7 +6,7 @@ description = "High-performance Rust API bridge for Codex, Anthropic, OpenAI cha
 license = "MIT"
 repository = "https://github.com/DioNanos/AnthMorph"
 homepage = "https://github.com/DioNanos/AnthMorph"
-authors = ["Davide A. Guglielmi"]
+authors = ["DioNanos"]
 
 [[bin]]
 name = "anthmorph"

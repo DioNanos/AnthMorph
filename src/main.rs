@@ -23,7 +23,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Parser, Debug)]
 #[command(name = "anthmorph")]
-#[command(about = "High-performance Rust API bridge for Codex and non-Responses AI APIs")]
+#[command(about = "High-performance Rust API bridge for Codex and compatibility AI APIs")]
 #[command(version)]
 struct Cli {
     #[arg(long)]
@@ -99,7 +99,7 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Upstream API: {}", config.upstream_api.as_str());
     tracing::info!("Compat Mode: {}", config.compat_mode.as_str());
     tracing::info!(
-        "DeepSeek Anthropic Backend: {}",
+        "Provider Messages Backend: {}",
         config.deepseek_anthropic_backend
     );
     tracing::info!("Strict Model: {}", config.strict_model);

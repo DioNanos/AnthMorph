@@ -20,13 +20,19 @@ The bundled prebuilt is currently Termux-only. Linux and macOS are supported thr
 
 ## Runtime Shape
 
-The 0.2.x package is a Codex companion daemon. The public runtime surface is:
+The package exposes three public compatibility surfaces:
 
-- `POST /v1/responses`
+- Codex/codex-vl Responses ingress: `POST /v1/responses`
+- Anthropic Messages ingress: `POST /v1/messages`
+- OpenAI legacy chat ingress: `POST /v1/chat/completions`
+
+It also exposes:
+
+- `POST /v1/messages/count_tokens`
 - `GET /v1/models`
 - `GET /health`
 
-The package exposes three public compatibility surfaces: Codex/codex-vl `/v1/responses`, Anthropic Messages `/v1/messages`, and OpenAI legacy chat `/v1/chat/completions`. `ANTHMORPH_UPSTREAM_API=chat-completions` remains the backend adapter for providers that do not expose `/responses`.
+`ANTHMORPH_UPSTREAM_API=chat-completions` is the backend adapter for providers that do not expose `/responses`.
 
 ## Docker Build
 

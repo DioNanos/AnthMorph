@@ -3,7 +3,7 @@
   "version": "0.2.0",
   "description": "High-performance Rust API bridge for Codex, Anthropic, OpenAI chat, and Responses",
   "license": "MIT",
-  "author": "Davide A. Guglielmi",
+  "author": "DioNanos",
   "bin": {
     "anthmorph": "bin/anthmorph",
     "anthmorphctl": "scripts/anthmorphctl"
@@ -21,10 +21,8 @@
     "scripts/docker_rust_test.sh",
     "scripts/docker_secret_scan.sh",
     "scripts/postinstall.js",
-    "scripts/test_deepseek4_direct.sh",
-    "scripts/test_claude_code_patterns_real.sh",
     "src/",
-    "docs/CLAUDE_CODE_SETUP.md",
+    "docs/CLIENT_COMPATIBILITY.md",
     "docs/GITHUB_ABOUT.md",
     "docs/PACKAGING.md",
     "docs/RELEASE.md",
@@ -44,8 +42,7 @@
     "verify:docker": "sh scripts/docker_release_checks.sh",
     "pack:dry-run": "npm pack --dry-run",
     "pack:dry-run:docker": "sh scripts/docker_npm_dry_run.sh",
-    "publish:dry-run:docker": "sh scripts/docker_npm_dry_run.sh publish",
-    "test:deepseek:direct": "sh scripts/test_deepseek4_direct.sh"
+    "publish:dry-run:docker": "sh scripts/docker_npm_dry_run.sh publish"
   },
   "keywords": [
     "anthropic",
@@ -54,7 +51,6 @@
     "codex-vl",
     "proxy",
     "responses-api",
-    "chutes",
     "openai",
     "chat-completions",
     "openai-compatible",
