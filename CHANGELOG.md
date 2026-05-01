@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.1
+
+- Removed bundled native npm binaries; installs now build locally with Cargo.
+- Kept GitHub release packaging focused on source/install flow instead of unsigned macOS artifacts.
+
 ## 0.2.0
 
 - Repositioned AnthMorph as a high-performance Rust bridge for Codex/codex-vl, Anthropic Messages, OpenAI legacy chat, and Responses traffic.
