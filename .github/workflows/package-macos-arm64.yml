@@ -1,4 +1,4 @@
-name: package-macos-arm64
+name: macos-local-build-smoke
 
 on:
   workflow_dispatch:
@@ -10,21 +10,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build release binary
+      - name: Build release binary locally
         run: cargo build --release
-      - name: Verify binary
+      - name: Verify local binary
         run: |
           set -euo pipefail
           file target/release/anthmorph
           target/release/anthmorph --version
-          shasum -a 256 target/release/anthmorph > anthmorph-darwin-arm64.sha256
-      - name: Stage artifact
-        run: |
-          set -euo pipefail
-          mkdir -p artifact
-          cp target/release/anthmorph artifact/anthmorph-darwin-arm64
-          cp anthmorph-darwin-arm64.sha256 artifact/
-      - uses: actions/upload-artifact@v4
-        with:
-          name: anthmorph-darwin-arm64
-          path: artifact/
