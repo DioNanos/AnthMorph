@@ -47,11 +47,21 @@ jobs:
       - name: Locate Android NDK
         run: |
           set -euo pipefail
-          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
-            echo "ANDROID_NDK_HOME is required on the Forge runner" >&2
+          ndk="${ANDROID_NDK_HOME:-}"
+          if [ -z "$ndk" ]; then
+            for candidate in               "$HOME/android-ndk/android-ndk-r27c"               "$HOME/android-ndk"               "$HOME/android-sdk/ndk"/*; do
+              if [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
+                ndk="$candidate"
+                break
+              fi
+            done
+          fi
+          if [ -z "$ndk" ]; then
+            echo "Android NDK not found on Forge runner" >&2
             exit 1
           fi
-          toolchain="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
           echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
