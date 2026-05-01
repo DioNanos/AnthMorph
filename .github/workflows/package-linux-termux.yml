@@ -32,10 +32,14 @@ jobs:
           chmod 755 artifact/prebuilt/linux-x64/anthmorph
           artifact/prebuilt/linux-x64/anthmorph --version
           shasum -a 256 artifact/prebuilt/linux-x64/anthmorph > artifact/anthmorph-linux-x64.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: anthmorph-linux-x64
-          path: artifact/
+      - name: Persist Linux artifact on runner
+        run: |
+          set -euo pipefail
+          out="$HOME/.local/share/forgejo-artifacts/AnthMorph/${GITHUB_SHA}/anthmorph-linux-x64"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp -a artifact/. "$out/"
+          find "$out" -type f -maxdepth 3 -print
 
   build-android-arm64:
     runs-on: android-heavy
@@ -74,7 +78,11 @@ jobs:
           cp target/aarch64-linux-android/release/anthmorph artifact/prebuilt/android-arm64/anthmorph
           chmod 755 artifact/prebuilt/android-arm64/anthmorph
           shasum -a 256 artifact/prebuilt/android-arm64/anthmorph > artifact/anthmorph-android-arm64.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: anthmorph-android-arm64
-          path: artifact/
+      - name: Persist Android artifact on runner
+        run: |
+          set -euo pipefail
+          out="$HOME/.local/share/forgejo-artifacts/AnthMorph/${GITHUB_SHA}/anthmorph-android-arm64"
+          rm -rf "$out"
+          mkdir -p "$out"
+          cp -a artifact/. "$out/"
+          find "$out" -type f -maxdepth 3 -print
