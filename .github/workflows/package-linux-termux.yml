@@ -19,9 +19,11 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - name: Build Linux x64 release binary
-        run: cargo build --release
+        run: |
+          set -euo pipefail
+          cargo --version
+          cargo build --release
       - name: Stage Linux artifact
         run: |
           set -euo pipefail
@@ -40,9 +42,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android
+      - name: Ensure Android Rust target
+        run: rustup target add aarch64-linux-android
       - name: Locate Android NDK
         run: |
           set -euo pipefail
