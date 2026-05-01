@@ -3,7 +3,6 @@ set -eu
 
 SCRIPT_PATH=$(readlink -f -- "$0" 2>/dev/null || printf "%s" "$0")
 ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
-PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
 RELEASE_BIN=$ROOT_DIR/target/release/anthmorph
 DEBUG_BIN=$ROOT_DIR/target/debug/anthmorph
 IS_TERMUX=0
@@ -12,7 +11,14 @@ if [ -n "${TERMUX_VERSION:-}" ] || [ "${PREFIX:-}" = "/data/data/com.termux/file
   IS_TERMUX=1
 fi
 
-if [ "$IS_TERMUX" -eq 1 ] && [ -x "$PREBUILT_BIN" ]; then
+case "$(uname -s 2>/dev/null || printf unknown):$(uname -m 2>/dev/null || printf unknown):$IS_TERMUX" in
+  Linux:x86_64:*) PREBUILT_BIN=$ROOT_DIR/prebuilt/linux-x64/anthmorph ;;
+  Darwin:arm64:*) PREBUILT_BIN=$ROOT_DIR/prebuilt/darwin-arm64/anthmorph ;;
+  Linux:aarch64:1|Linux:arm64:1) PREBUILT_BIN=$ROOT_DIR/prebuilt/android-arm64/anthmorph ;;
+  *) PREBUILT_BIN= ;;
+esac
+
+if [ -n "$PREBUILT_BIN" ] && [ -x "$PREBUILT_BIN" ]; then
   exec "$PREBUILT_BIN" "$@"
 fi
 

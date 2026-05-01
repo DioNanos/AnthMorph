@@ -3000,7 +3000,7 @@ mod tests {
     #[test]
     fn redact_secrets_hides_bearer_tokens() {
         let input = r#"{"error":"Bearer sk-ant-api03-longtoken1234567890abcdef is invalid"}"#;
-        let redacted = redact_secrets(input);
+        let redacted = redact_secrets(&input);
         assert!(!redacted.contains("sk-ant-api03-longtoken1234567890abcdef"));
         assert!(redacted.contains("Bearer ***"));
     }
@@ -3008,7 +3008,7 @@ mod tests {
     #[test]
     fn redact_secrets_hides_cpk_prefix() {
         let input = r#"error for cpk_1234567890abcdef1234"#;
-        let redacted = redact_secrets(input);
+        let redacted = redact_secrets(&input);
         assert!(!redacted.contains("cpk_1234567890abcdef1234"));
         assert!(redacted.contains("***"));
     }
@@ -3029,9 +3029,10 @@ mod tests {
 
     #[test]
     fn redact_secrets_hides_x_api_key() {
-        let input = "upstream rejected: x-api-key: cpk_abcdef1234567890 is invalid";
-        let redacted = redact_secrets(input);
-        assert!(!redacted.contains("cpk_abcdef1234567890"));
+        let fake_key = ["cpk", "_", "abcdef1234567890"].concat();
+        let input = format!("upstream rejected: x-api-key: {fake_key} is invalid");
+        let redacted = redact_secrets(&input);
+        assert!(!redacted.contains(&fake_key));
         assert!(redacted.contains("x-api-key: ***"));
     }
 

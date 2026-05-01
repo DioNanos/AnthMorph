@@ -6,13 +6,28 @@ const packageJson = require("../package.json");
 
 const root = path.resolve(__dirname, "..");
 const prebuiltDir = path.join(root, "prebuilt");
-const prebuiltBin = path.join(prebuiltDir, "anthmorph");
 const releaseBin = path.join(root, "target", "release", "anthmorph");
 const defaultConfigScript = path.join(root, "scripts", "write_default_config.py");
 const expectedVersion = packageJson.version;
 const isTermux =
   process.env.TERMUX_VERSION !== undefined ||
   process.env.PREFIX === "/data/data/com.termux/files/usr";
+
+function targetTriple() {
+  if (isTermux && os.arch() === "arm64") {
+    return "android-arm64";
+  }
+  if (os.platform() === "linux" && os.arch() === "x64") {
+    return "linux-x64";
+  }
+  if (os.platform() === "darwin" && os.arch() === "arm64") {
+    return "darwin-arm64";
+  }
+  return null;
+}
+
+const prebuiltTarget = targetTriple();
+const prebuiltBin = prebuiltTarget ? path.join(prebuiltDir, prebuiltTarget, "anthmorph") : null;
 
 function hasCargo() {
   const probe = spawnSync("cargo", ["--version"], { stdio: "ignore" });
@@ -40,7 +55,7 @@ function binaryVersion(file) {
 }
 
 function ensurePrebuiltPermissions() {
-  if (fs.existsSync(prebuiltBin)) {
+  if (prebuiltBin && fs.existsSync(prebuiltBin)) {
     fs.chmodSync(prebuiltBin, 0o755);
   }
 }
@@ -49,11 +64,11 @@ function buildRelease() {
   if (!hasCargo()) {
     console.error(
       [
-        "[anthmorph] cargo not found; cannot build a local Linux/macOS binary.",
+        "[anthmorph] cargo not found and no matching packaged binary is available.",
         "[anthmorph] Supported install paths:",
-        "  1. install Rust/Cargo and rerun the install",
-        "  2. run scripts/docker_build_linux.sh from the package checkout",
-        "  3. use Termux on Android/aarch64 to consume the bundled prebuilt",
+        "  1. use Linux x64, macOS arm64, or Termux Android arm64 prebuilt packages",
+        "  2. install Rust/Cargo and rerun the install",
+        "  3. run scripts/docker_build_linux.sh from the package checkout",
         "[anthmorph] See docs/PACKAGING.md for details.",
       ].join("\n"),
     );
@@ -71,9 +86,10 @@ function buildRelease() {
 }
 
 function syncReleaseToPrebuilt() {
-  if (!fs.existsSync(releaseBin)) {
+  if (!prebuiltBin || !fs.existsSync(releaseBin)) {
     return;
   }
+  fs.mkdirSync(path.dirname(prebuiltBin), { recursive: true });
   fs.copyFileSync(releaseBin, prebuiltBin);
   fs.chmodSync(prebuiltBin, 0o755);
   if (os.platform() === "darwin") {
@@ -104,8 +120,9 @@ function bootstrapDefaultConfig() {
 fs.mkdirSync(prebuiltDir, { recursive: true });
 ensurePrebuiltPermissions();
 
-if (isTermux && isExecutable(prebuiltBin) && binaryVersion(prebuiltBin) === expectedVersion) {
-  console.log(`[anthmorph] using packaged Termux prebuilt ${expectedVersion}`);
+if (prebuiltBin && isExecutable(prebuiltBin) && binaryVersion(prebuiltBin) === expectedVersion) {
+  console.log(`[anthmorph] using packaged ${prebuiltTarget} prebuilt ${expectedVersion}`);
+  bootstrapDefaultConfig();
   process.exit(0);
 }
 
