@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.2
+
+- Restored Linux and Termux npm prebuilts.
+- Kept macOS npm installs on local Cargo builds.
+
 ## 0.2.0
 
 - Repositioned AnthMorph as a high-performance Rust bridge for Codex/codex-vl, Anthropic Messages, OpenAI legacy chat, and Responses traffic.

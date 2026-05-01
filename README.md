@@ -20,7 +20,7 @@ backend with minimal runtime overhead.
 
 ## Project Status
 
-- Current line: `0.2.0`
+- Current line: `0.2.2`
 - Primary Codex API: `POST /v1/responses`
 - Anthropic ingress: `POST /v1/messages`, `POST /v1/messages/count_tokens`
 - OpenAI legacy ingress: `POST /v1/chat/completions`, `POST /chat/completions`
@@ -46,6 +46,8 @@ Global npm install:
 ```bash
 npm install -g @mmmbuto/anthmorph
 ```
+
+On macOS, npm install builds the local binary with Cargo.
 
 Local source build:
 

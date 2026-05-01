@@ -1,0 +1,69 @@
+name: package-linux-termux
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - develop
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - scripts/**
+      - bin/**
+      - .github/workflows/package-linux-termux.yml
+
+jobs:
+  build-linux-x64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build Linux x64 release binary
+        run: cargo build --release
+      - name: Stage Linux artifact
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/prebuilt/linux-x64
+          cp target/release/anthmorph artifact/prebuilt/linux-x64/anthmorph
+          chmod 755 artifact/prebuilt/linux-x64/anthmorph
+          artifact/prebuilt/linux-x64/anthmorph --version
+          shasum -a 256 artifact/prebuilt/linux-x64/anthmorph > artifact/anthmorph-linux-x64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anthmorph-linux-x64
+          path: artifact/
+
+  build-android-arm64:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Locate Android NDK
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+            echo "ANDROID_NDK_HOME is required on the Forge runner" >&2
+            exit 1
+          fi
+          toolchain="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+      - name: Build Android arm64 release binary
+        run: cargo build --target aarch64-linux-android --release
+      - name: Stage Android artifact
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/prebuilt/android-arm64
+          cp target/aarch64-linux-android/release/anthmorph artifact/prebuilt/android-arm64/anthmorph
+          chmod 755 artifact/prebuilt/android-arm64/anthmorph
+          shasum -a 256 artifact/prebuilt/android-arm64/anthmorph > artifact/anthmorph-android-arm64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anthmorph-android-arm64
+          path: artifact/

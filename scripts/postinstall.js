@@ -20,9 +20,6 @@ function targetTriple() {
   if (os.platform() === "linux" && os.arch() === "x64") {
     return "linux-x64";
   }
-  if (os.platform() === "darwin" && os.arch() === "arm64") {
-    return "darwin-arm64";
-  }
   return null;
 }
 
@@ -65,10 +62,8 @@ function buildRelease() {
     console.error(
       [
         "[anthmorph] cargo not found and no matching packaged binary is available.",
-        "[anthmorph] Supported install paths:",
-        "  1. use Linux x64, macOS arm64, or Termux Android arm64 prebuilt packages",
-        "  2. install Rust/Cargo and rerun the install",
-        "  3. run scripts/docker_build_linux.sh from the package checkout",
+        "[anthmorph] Linux x64 and Termux Android arm64 use packaged prebuilts when available.",
+        "[anthmorph] macOS installs build locally and require Rust/Cargo.",
         "[anthmorph] See docs/PACKAGING.md for details.",
       ].join("\n"),
     );
@@ -82,20 +77,6 @@ function buildRelease() {
 
   if (build.status !== 0) {
     process.exit(build.status || 1);
-  }
-}
-
-function syncReleaseToPrebuilt() {
-  if (!prebuiltBin || !fs.existsSync(releaseBin)) {
-    return;
-  }
-  fs.mkdirSync(path.dirname(prebuiltBin), { recursive: true });
-  fs.copyFileSync(releaseBin, prebuiltBin);
-  fs.chmodSync(prebuiltBin, 0o755);
-  if (os.platform() === "darwin") {
-    spawnSync("codesign", ["--force", "--sign", "-", prebuiltBin], {
-      stdio: "ignore",
-    });
   }
 }
 
@@ -129,7 +110,6 @@ if (prebuiltBin && isExecutable(prebuiltBin) && binaryVersion(prebuiltBin) === e
 if (os.platform() === "linux" || os.platform() === "darwin") {
   console.log("[anthmorph] building local release binary for this platform");
   buildRelease();
-  syncReleaseToPrebuilt();
   bootstrapDefaultConfig();
   process.exit(0);
 }

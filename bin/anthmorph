@@ -13,7 +13,6 @@ fi
 
 case "$(uname -s 2>/dev/null || printf unknown):$(uname -m 2>/dev/null || printf unknown):$IS_TERMUX" in
   Linux:x86_64:*) PREBUILT_BIN=$ROOT_DIR/prebuilt/linux-x64/anthmorph ;;
-  Darwin:arm64:*) PREBUILT_BIN=$ROOT_DIR/prebuilt/darwin-arm64/anthmorph ;;
   Linux:aarch64:1|Linux:arm64:1) PREBUILT_BIN=$ROOT_DIR/prebuilt/android-arm64/anthmorph ;;
   *) PREBUILT_BIN= ;;
 esac

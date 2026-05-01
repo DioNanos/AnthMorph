@@ -1,6 +1,6 @@
 {
   "name": "@mmmbuto/anthmorph",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "High-performance Rust API bridge for Codex, Anthropic, OpenAI chat, and Responses",
   "license": "MIT",
   "author": "DioNanos",

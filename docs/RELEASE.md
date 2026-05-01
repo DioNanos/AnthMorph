@@ -40,7 +40,8 @@ Or step by step:
 - versions aligned in `Cargo.toml`, `Cargo.lock`, `package.json`, and docs
 - Rust tests pass
 - Docker secret scan passes
-- Linux, Termux, and macOS release binaries are built and checksummed
+- Linux and Termux release binaries are built and checksummed
+- macOS npm install builds locally with Cargo
 - npm pack dry-run passes
 - npm publish dry-run passes
 - runtime surface remains `POST /v1/responses`, `GET /v1/models`, and `GET /health`
@@ -50,26 +51,26 @@ Or step by step:
 ```bash
 git status
 git add .
-git commit -m "Release v0.2.0"
-git tag -a v0.2.0 -m "Release v0.2.0"
+git commit -m "Release v0.2.2"
+git tag -a v0.2.2 -m "Release v0.2.2"
 git push origin develop
-git push origin v0.2.0
+git push origin v0.2.2
 ```
 
 ## GitHub Release Notes
 
-Use the `0.2.0` section from `CHANGELOG.md` as the release body.
+Use the `0.2.2` section from `CHANGELOG.md` as the release body.
 
 If `gh` is installed:
 
 ```bash
 awk '
-  /^## 0.2.0$/ {capture=1; next}
+  /^## 0.2.2$/ {capture=1; next}
   /^## / && capture {exit}
   capture {print}
-' CHANGELOG.md > /tmp/anthmorph-v0.2.0-notes.md
+' CHANGELOG.md > /tmp/anthmorph-v0.2.2-notes.md
 
-gh release create v0.2.0 --title "v0.2.0" --notes-file /tmp/anthmorph-v0.2.0-notes.md
+gh release create v0.2.2 --title "v0.2.2" --notes-file /tmp/anthmorph-v0.2.2-notes.md
 ```
 
 ## npm Publish
