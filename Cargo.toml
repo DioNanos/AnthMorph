@@ -1,6 +1,6 @@
 [package]
 name = "AnthMorph"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 description = "High-performance Rust API bridge for Codex, Anthropic, OpenAI chat, and Responses"
 license = "MIT"

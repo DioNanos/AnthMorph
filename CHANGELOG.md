@@ -2,10 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.2.1
+## 0.2.2
 
-- Removed bundled native npm binaries; installs now build locally with Cargo.
-- Kept GitHub release packaging focused on source/install flow instead of unsigned macOS artifacts.
+- Restored Linux and Termux npm prebuilts.
+- Kept macOS npm installs on local Cargo builds.
 
 ## 0.2.0
 

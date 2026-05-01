@@ -14,6 +14,12 @@ const isTermux =
   process.env.PREFIX === "/data/data/com.termux/files/usr";
 
 function targetTriple() {
+  if (isTermux && os.arch() === "arm64") {
+    return "android-arm64";
+  }
+  if (os.platform() === "linux" && os.arch() === "x64") {
+    return "linux-x64";
+  }
   return null;
 }
 
@@ -55,11 +61,9 @@ function buildRelease() {
   if (!hasCargo()) {
     console.error(
       [
-        "[anthmorph] cargo not found; cannot build a local binary for this platform.",
-        "[anthmorph] Supported install paths:",
-        "  1. install Rust/Cargo and rerun the install",
-        "  2. run scripts/docker_build_linux.sh from the package checkout",
-        "[anthmorph] macOS, Linux, and Termux installs build locally and require Cargo.",
+        "[anthmorph] cargo not found and no matching packaged binary is available.",
+        "[anthmorph] Linux x64 and Termux Android arm64 use packaged prebuilts when available.",
+        "[anthmorph] macOS installs build locally and require Rust/Cargo.",
         "[anthmorph] See docs/PACKAGING.md for details.",
       ].join("\n"),
     );
