@@ -4,19 +4,21 @@ AnthMorph ships as a single npm package: `@mmmbuto/anthmorph`.
 
 ## Platform Model
 
-- Termux on Android/aarch64 uses the bundled prebuilt binary from `prebuilt/anthmorph`
-- Linux and macOS build from source during install
-- the supported reproducible build path is Docker
+- Linux x64 uses `prebuilt/linux-x64/anthmorph`
+- macOS Apple Silicon uses `prebuilt/darwin-arm64/anthmorph`
+- Termux on Android/aarch64 uses `prebuilt/android-arm64/anthmorph`
+- unsupported platforms may build from source during install when Cargo is available
 
-The bundled prebuilt is currently Termux-only. Linux and macOS are supported through source builds.
+The published npm package carries the supported release binaries directly.
 
 ## Install Behavior
 
 `postinstall` does this:
 
-- on Termux: uses the packaged prebuilt when its version matches the package version
-- on Linux/macOS: runs `cargo build --release`
-- if Cargo is missing: exits with a clear error and points to Docker-based build instructions
+- selects the matching prebuilt for Linux x64, macOS arm64, or Termux Android arm64
+- verifies the selected binary reports the package version
+- bootstraps the default config when missing
+- falls back to `cargo build --release` only when no supported prebuilt exists
 
 ## Runtime Shape
 
@@ -49,7 +51,7 @@ The published package should include only:
 - runtime shims and CLI scripts
 - Rust sources and manifests needed for local builds
 - docs and changelog
-- the Termux prebuilt
+- Linux, macOS, and Termux prebuilts
 
 The published package should not include:
 

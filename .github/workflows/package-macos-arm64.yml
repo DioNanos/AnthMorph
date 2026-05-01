@@ -1,0 +1,30 @@
+name: package-macos-arm64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build release binary
+        run: cargo build --release
+      - name: Verify binary
+        run: |
+          set -euo pipefail
+          file target/release/anthmorph
+          target/release/anthmorph --version
+          shasum -a 256 target/release/anthmorph > anthmorph-darwin-arm64.sha256
+      - name: Stage artifact
+        run: |
+          set -euo pipefail
+          mkdir -p artifact
+          cp target/release/anthmorph artifact/anthmorph-darwin-arm64
+          cp anthmorph-darwin-arm64.sha256 artifact/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anthmorph-darwin-arm64
+          path: artifact/

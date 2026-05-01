@@ -15,8 +15,17 @@ STATE_DIR=$(dirname "$CONFIG_FILE")
 LEGACY_ENV_FILE=$STATE_DIR/config.env
 PID_FILE=$STATE_DIR/anthmorph.pid
 LOG_FILE=$STATE_DIR/anthmorph.log
-PREBUILT_BIN=$ROOT_DIR/prebuilt/anthmorph
-if [ -x "$PREBUILT_BIN" ]; then
+IS_TERMUX=0
+if [ -n "${TERMUX_VERSION:-}" ] || [ "${PREFIX:-}" = "/data/data/com.termux/files/usr" ]; then
+  IS_TERMUX=1
+fi
+case "$(uname -s 2>/dev/null || printf unknown):$(uname -m 2>/dev/null || printf unknown):$IS_TERMUX" in
+  Linux:x86_64:*) PREBUILT_BIN=$ROOT_DIR/prebuilt/linux-x64/anthmorph ;;
+  Darwin:arm64:*) PREBUILT_BIN=$ROOT_DIR/prebuilt/darwin-arm64/anthmorph ;;
+  Linux:aarch64:1|Linux:arm64:1) PREBUILT_BIN=$ROOT_DIR/prebuilt/android-arm64/anthmorph ;;
+  *) PREBUILT_BIN= ;;
+esac
+if [ -n "$PREBUILT_BIN" ] && [ -x "$PREBUILT_BIN" ]; then
   BIN_PATH_DEFAULT=$PREBUILT_BIN
 else
   BIN_PATH_DEFAULT=$ROOT_DIR/target/release/anthmorph
@@ -353,7 +362,7 @@ ensure_bin_ready() {
   if bin_supports_profile "$BIN_PATH"; then
     return 0
   fi
-  if bin_supports_profile "$PREBUILT_BIN"; then
+  if [ -n "$PREBUILT_BIN" ] && bin_supports_profile "$PREBUILT_BIN"; then
     BIN_PATH="$PREBUILT_BIN"
     save_config_values
     return 0

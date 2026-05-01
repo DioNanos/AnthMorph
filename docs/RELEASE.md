@@ -40,7 +40,7 @@ Or step by step:
 - versions aligned in `Cargo.toml`, `Cargo.lock`, `package.json`, and docs
 - Rust tests pass
 - Docker secret scan passes
-- Docker Linux build passes
+- Linux, Termux, and macOS release binaries are built and checksummed
 - npm pack dry-run passes
 - npm publish dry-run passes
 - runtime surface remains `POST /v1/responses`, `GET /v1/models`, and `GET /health`
