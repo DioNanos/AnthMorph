@@ -15,7 +15,7 @@ on:
 
 jobs:
   build-linux-x64:
-    runs-on: ubuntu-latest
+    runs-on: linux-x64-primary
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
           path: artifact/
 
   build-android-arm64:
-    runs-on: ubuntu-latest
+    runs-on: android-heavy
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
