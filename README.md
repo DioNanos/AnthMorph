@@ -164,3 +164,13 @@ Docker release checks:
 MIT License
 
 Copyright (c) 2026 DioNanos
+
+---
+
+## Contact
+
+Maintained by [DioNanos](https://github.com/DioNanos).
+
+- General / dev: **dev@mmmbuto.com**
+- Security disclosures: **security@mmmbuto.com**
+- Project hub: <https://mmmbuto.com>
