@@ -2,7 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/DioNanos/AnthMorph?style=flat-square&logo=github)](https://github.com/DioNanos/AnthMorph/releases)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow?style=flat-square)](LICENSE)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Termux-2ea44f?style=flat-square)](#install)
 [![API](https://img.shields.io/badge/api-Responses%20%7C%20Messages%20%7C%20Chat-2563eb?style=flat-square)](#project-status)
@@ -161,7 +161,7 @@ Docker release checks:
 
 ## License
 
-MIT License
+Apache-2.0. See [LICENSE](LICENSE).
 
 Copyright (c) 2026 DioNanos
 
