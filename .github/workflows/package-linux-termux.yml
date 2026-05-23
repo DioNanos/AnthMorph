@@ -15,10 +15,11 @@ on:
 
 jobs:
   build-linux-x64:
-    runs-on: linux-x64-primary
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - name: Build Linux x64 release binary
         run: |
           set -euo pipefail
@@ -32,43 +33,37 @@ jobs:
           chmod 755 artifact/prebuilt/linux-x64/anthmorph
           artifact/prebuilt/linux-x64/anthmorph --version
           shasum -a 256 artifact/prebuilt/linux-x64/anthmorph > artifact/anthmorph-linux-x64.sha256
-      - name: Persist Linux artifact on runner
-        run: |
-          set -euo pipefail
-          out="$HOME/.local/share/forgejo-artifacts/AnthMorph/${GITHUB_SHA}/anthmorph-linux-x64"
-          rm -rf "$out"
-          mkdir -p "$out"
-          cp -a artifact/. "$out/"
-          find "$out" -type f -maxdepth 3 -print
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anthmorph-linux-x64
+          path: artifact/
+          if-no-files-found: error
 
   build-android-arm64:
-    runs-on: android-heavy
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - name: Ensure Android Rust target
-        run: rustup target add aarch64-linux-android
-      - name: Locate Android NDK
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Setup Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27c
+          add-to-path: false
+      - name: Configure cargo env for Android NDK
         run: |
           set -euo pipefail
-          ndk="${ANDROID_NDK_HOME:-}"
-          if [ -z "$ndk" ]; then
-            for candidate in               "$HOME/android-ndk/android-ndk-r27c"               "$HOME/android-ndk"               "$HOME/android-sdk/ndk"/*; do
-              if [ -d "$candidate/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
-                ndk="$candidate"
-                break
-              fi
-            done
-          fi
-          if [ -z "$ndk" ]; then
-            echo "Android NDK not found on Forge runner" >&2
-            exit 1
-          fi
+          ndk="${NDK_PATH}"
           toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
           echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
           echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android24-clang" >> "$GITHUB_ENV"
+        env:
+          NDK_PATH: ${{ steps.ndk.outputs.ndk-path }}
       - name: Build Android arm64 release binary
         run: cargo build --target aarch64-linux-android --release
       - name: Stage Android artifact
@@ -78,11 +73,8 @@ jobs:
           cp target/aarch64-linux-android/release/anthmorph artifact/prebuilt/android-arm64/anthmorph
           chmod 755 artifact/prebuilt/android-arm64/anthmorph
           shasum -a 256 artifact/prebuilt/android-arm64/anthmorph > artifact/anthmorph-android-arm64.sha256
-      - name: Persist Android artifact on runner
-        run: |
-          set -euo pipefail
-          out="$HOME/.local/share/forgejo-artifacts/AnthMorph/${GITHUB_SHA}/anthmorph-android-arm64"
-          rm -rf "$out"
-          mkdir -p "$out"
-          cp -a artifact/. "$out/"
-          find "$out" -type f -maxdepth 3 -print
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anthmorph-android-arm64
+          path: artifact/
+          if-no-files-found: error
