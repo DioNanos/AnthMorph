@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.3
+
+- Streaming `response.completed` SSE event now carries the `usage` field (input/output tokens). Token tracking on consumer clients (codex, codex-vl, Claude Code, and any client consuming the Responses streaming wire format) is restored — previously all token counters reported zero in streaming mode because the final event payload omitted `usage`.
+- Upstream `stream_options.include_usage=true` is enabled by default in the OpenAI-generic translation path so backends that gate the usage chunk on this flag (Z.AI, DeepSeek, OpenAI itself) emit it.
+- Accumulator captures the latest `usage` chunk in the streaming loop and injects it into the `response.completed` payload before sending. Non-streaming path was already correct and is unchanged.
+
 ## 0.2.2
 
 - Restored Linux and Termux npm prebuilts.
