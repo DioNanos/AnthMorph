@@ -1924,6 +1924,7 @@ async fn handle_responses_non_streaming(
         usage: Some(json!({
             "input_tokens": openai_resp.usage.prompt_tokens,
             "output_tokens": openai_resp.usage.completion_tokens,
+            "total_tokens": openai_resp.usage.prompt_tokens + openai_resp.usage.completion_tokens,
         })),
     };
     Ok(Json(envelope).into_response())
@@ -2256,6 +2257,7 @@ fn create_responses_sse_stream(
                                             response_payload["usage"] = json!({
                                                 "input_tokens": input,
                                                 "output_tokens": output,
+                                                "total_tokens": input + output,
                                             });
                                         }
                                         yield Ok(Bytes::from(sse_event("response.completed", &json!({

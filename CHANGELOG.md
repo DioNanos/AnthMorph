@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.4
+
+- `usage` payload now includes `total_tokens` alongside `input_tokens` and `output_tokens` in both the streaming `response.completed` SSE event and the non-streaming `/v1/responses` envelope. Some Responses-API consumers (notably codex/codex-vl) treat `total_tokens` as a required field and trigger reconnect storms when it is absent, which 0.2.3 inadvertently caused by emitting only the two component fields.
+
 ## 0.2.3
 
 - Streaming `response.completed` SSE event now carries the `usage` field (input/output tokens). Token tracking on consumer clients (codex, codex-vl, Claude Code, and any client consuming the Responses streaming wire format) is restored — previously all token counters reported zero in streaming mode because the final event payload omitted `usage`.
