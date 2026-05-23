@@ -262,6 +262,9 @@ pub fn anthropic_to_openai(
         },
         stop: req.stop_sequences,
         stream: req.stream,
+        stream_options: req.stream.and_then(|s| {
+            s.then(|| openai::StreamOptions { include_usage: true })
+        }),
         tools,
         tool_choice: extract_tool_choice(&req.extra).map(|choice| match choice {
             openai::ToolChoice::String(value) => openai::ToolChoice::String(value),

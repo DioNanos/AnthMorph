@@ -1832,6 +1832,9 @@ fn responses_to_openai(
         },
         stop: None,
         stream: req.stream,
+        stream_options: req.stream.and_then(|s| {
+            s.then(|| openai::StreamOptions { include_usage: true })
+        }),
         tools,
         tool_choice,
         thinking: (profile == BackendProfile::Deepseek).then(|| openai::ThinkingConfig {
@@ -2000,6 +2003,8 @@ fn create_responses_sse_stream(
         let mut reasoning_content = String::new();
         let mut content_part_started_text = false;
         let mut functions: BTreeMap<usize, FunctionState> = BTreeMap::new();
+        let mut total_input_tokens: Option<u64> = None;
+        let mut total_output_tokens: Option<u64> = None;
         pin!(stream);
         let mut raw_buffer: Vec<u8> = Vec::new();
         let chunk_timeout = Duration::from_secs(chunk_timeout_secs);
@@ -2049,6 +2054,14 @@ fn create_responses_sse_stream(
                                 }
                                 if model_name.is_none() {
                                     model_name = chunk.model.clone().or_else(|| Some(fallback_model.clone()));
+                                }
+                                if let Some(usage) = &chunk.usage {
+                                    if let Some(pt) = usage.prompt_tokens {
+                                        total_input_tokens = Some(pt as u64);
+                                    }
+                                    if let Some(ct) = usage.completion_tokens {
+                                        total_output_tokens = Some(ct as u64);
+                                    }
                                 }
                                 if !created_sent {
                                     let created = json!({
@@ -2234,13 +2247,20 @@ fn create_responses_sse_stream(
                                                 }))));
                                             }
                                         }
+                                        let mut response_payload = json!({
+                                            "id": response_id.clone().unwrap_or_else(generate_message_id),
+                                            "model": model_name.clone().unwrap_or_else(|| fallback_model.clone()),
+                                            "output": [],
+                                        });
+                                        if let (Some(input), Some(output)) = (total_input_tokens, total_output_tokens) {
+                                            response_payload["usage"] = json!({
+                                                "input_tokens": input,
+                                                "output_tokens": output,
+                                            });
+                                        }
                                         yield Ok(Bytes::from(sse_event("response.completed", &json!({
                                             "type": "response.completed",
-                                            "response": {
-                                                "id": response_id.clone().unwrap_or_else(generate_message_id),
-                                                "model": model_name.clone().unwrap_or_else(|| fallback_model.clone()),
-                                                "output": [],
-                                            }
+                                            "response": response_payload,
                                         }))));
                                     }
                                 }
@@ -3065,6 +3085,7 @@ mod tests {
             top_k: None,
             stop: None,
             stream: None,
+            stream_options: None,
             tools: Some(vec![openai::Tool {
                 tool_type: "function".to_string(),
                 function: openai::Function {

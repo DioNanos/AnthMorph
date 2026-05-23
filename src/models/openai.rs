@@ -5,6 +5,11 @@ use serde::{Deserialize, Serialize};
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize)]
+pub struct StreamOptions {
+    pub include_usage: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct OpenAIRequest {
     pub model: String,
     pub messages: Vec<Message>,
@@ -20,6 +25,8 @@ pub struct OpenAIRequest {
     pub stop: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<Tool>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -235,6 +242,8 @@ pub struct StreamFunctionCall {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StreamUsage {
+    #[serde(rename = "prompt_tokens")]
+    pub prompt_tokens: Option<usize>,
     #[serde(rename = "completion_tokens")]
     pub completion_tokens: Option<usize>,
 }
