@@ -1,6 +1,8 @@
 # AnthMorph
 
 [![Release](https://img.shields.io/github/v/release/DioNanos/AnthMorph?style=flat-square&logo=github)](https://github.com/DioNanos/AnthMorph/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/DioNanos/AnthMorph/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=CI)](https://github.com/DioNanos/AnthMorph/actions/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-52%20passing-2ea44f?style=flat-square)](https://github.com/DioNanos/AnthMorph/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@mmmbuto/anthmorph?style=flat-square&logo=npm)](https://www.npmjs.com/package/@mmmbuto/anthmorph)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.94%2B-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
