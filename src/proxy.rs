@@ -1664,6 +1664,13 @@ fn responses_to_openai(
                     .and_then(|v| v.as_str())
                     .unwrap_or("user")
                     .to_string();
+                // Codex >= 0.145 emits `developer` role items; chat-completions
+                // upstreams (e.g. Kimi Code) reject it — normalize to `system`.
+                let role = if role == "developer" {
+                    "system".to_string()
+                } else {
+                    role
+                };
                 let mut parts = Vec::new();
                 if let Some(content) = item.get("content").and_then(|v| v.as_array()) {
                     for span in content {
